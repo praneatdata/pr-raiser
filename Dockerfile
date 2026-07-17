@@ -8,5 +8,5 @@ RUN update-ca-certificates
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY bot.py app.py ./
-CMD ["python", "app.py"]
+COPY bot.py socket_mode.py ./
+CMD ["python", "socket_mode.py"]

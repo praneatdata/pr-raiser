@@ -44,3 +44,18 @@ def health():
     if _init_error:
         return f"<pre>init failed:\n\n{_init_error}</pre>", 500
     return "PR Raiser is running."
+
+
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Self-checks: what's configured and what broke. Never exposes secret values."""
+    return {
+        "commit": os.environ.get("VERCEL_GIT_COMMIT_SHA", "unknown")[:7],
+        "python": sys.version.split()[0],
+        "env": {
+            name: bool(os.environ.get(name))
+            for name in ("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "GITHUB_TOKEN")
+        },
+        "init_ok": _init_error is None,
+        "init_error": _init_error,
+    }
