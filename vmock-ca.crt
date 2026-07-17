@@ -1,0 +1,51 @@
+-----BEGIN CERTIFICATE-----
+MIIExjCCAq6gAwIBAgIJANAcKfmDKdS6MA0GCSqGSIb3DQEBDQUAMBMxETAPBgNV
+BAMTCFZNb2NrIENBMB4XDTIzMTEyNzA4MDcxMloXDTI2MTEyNjA4MDcxMlowEzER
+MA8GA1UEAxMIVk1vY2sgQ0EwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoIC
+AQDP72Jnp/hKsA+L7tDDGHgqiaeQoos4Yc+/URp0Iiy3gJFw/j3fZ/wtIQRRmWxJ
+61KI5RA/IcJSRPdYSHlKLDeG3xZck0EHF+U9bUczJoulOP4PXlAPF55fLIRanb91
+B9bSFCxD7EgjJ07tHWGgU3PNoJC1WEBNv2WtTQhCi5fGI1lERNVmQ4HQdusqH05H
+PI6nDspmVtk1NGUkoE1QhdrIwuSNAZg/Sv/sQydth0wdQV6CgMdv9d3YDrN2hP+r
+HChqeXbuZ1Kf43YdZL+TlDEXlbsfbJudHWvNcgj7JhmwqPiTlFOHPdXRjs9c3rhn
+FFjLG6q9sK+WNnLc4C3aVSga+nfin0y3PW1B6i6HfA07556Fn40dzsP+JytSYMWU
+82+n4xoZ981ihYu5oMKiV/ByizZBLy8NyNHjd34gFaez+cnnZG0V0T+Mi2XvBwAk
+4SdOy8+ZuZmkqCEcZEDxLW6CDzBgGa6cAprA9kj+Y4iv0MfZUawxMgbR7HQeM19/
+rBLT1NLxvDY5jpf+dMUYmiD9lB6d5j0GTfSr6BFOomWvyt1ZXMvbB4wc1P1uvYSH
+vvtAt4E9pIjpCWNnU7JqyfWEGNSjE/lEYCo1ip2WMqj/UMM1qLgUMF7EIqdRCYQ3
+hB1vv4w85GaGU4OTU0WxZXuIqpTJMBpsL4JBatOROfs7jwIDAQABox0wGzAMBgNV
+HRMEBTADAQH/MAsGA1UdDwQEAwICBDANBgkqhkiG9w0BAQ0FAAOCAgEAvLlPsRdg
+qIoB04UTtZlCvOjQ9z7rWUlwxfUeEvranY7TrMPqrSzCzhMy7bjLXrwohVvTwYKc
+GQtWVUmRN0L3OIc4e10JHOO/20KwxAZaZtYFpAw2tz/lr6+Vo3RnyTBzod0y6MHp
+JtEWDWZOlYHMIoWPN5MbgcTD1zsgEokFLflTP/rchEQPqosb74e/JI0TezgnUlN6
+kGUwWDYjHQ9HGny/cg+2IHxQWUNnli1O5mH6f2sy+JKBGGOea/cvwgsWNLaNMBLQ
+JzRGih1aKShgaxiDRG8URAxU8BvcCP8eDGAuEzC1gu1YQEFU9HkULFdUp58HcW4O
+1PxWce4eD9LE4v0QI2uHgGQDtoEYtd8UcfyJf9l7v7j4Q9D09cv7Cb8yxkGBDpTP
+OtewI4s0J8tlyHQMWywpKtYmpvNI+XLLgnu7N8cnbkxCu/x/oniIVc97Vx6U9CQB
+7EspMQMDrlq270S+yE0ou4dli/y9xaQEWVpljH3zcqLKD3854Ta9kWGT0OqmGqGC
+NnSGj30bzlRGS1Y+pxKIA2SruWiD+4TTU5e8uxn10JcAw4+3wnEhyPUOr6+NOYTI
+C0qDZkvE5YSAdrSZ1lqtjwodn3GbL2+6wrYYIyPd39gBJ6AhBpwuAKQRAnTUG8ig
+ZOmGTd7TarkMbo8F3Uz7DqO+4XNJE5bPzJU=
+-----END CERTIFICATE-----
+---
+Server certificate
+subject=CN=slack.com
+issuer=CN=VMock CA
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: rsa_pss_rsae_sha256
+Peer Temp Key: X25519, 253 bits
+---
+SSL handshake has read 2917 bytes and written 1620 bytes
+Verification: OK
+---
+New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+Protocol: TLSv1.3
+Server public key is 2048 bit
+This TLS version forbids renegotiation.
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+Early data was not sent
+Verify return code: 0 (ok)
+---

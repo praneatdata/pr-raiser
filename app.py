@@ -6,10 +6,12 @@ Runs over Slack Socket Mode, so it needs no public URL.
 """
 import os
 import re
+import ssl
 import logging
 
 import requests
 from slack_bolt import App
+from slack_sdk import WebClient
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 try:
@@ -28,7 +30,13 @@ GH_HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-app = App(token=os.environ["SLACK_BOT_TOKEN"])
+# The corporate TLS proxy (VMock CA) re-signs certificates without the
+# Authority Key Identifier extension, which Python 3.13+'s strict verification
+# rejects. Keep full verification but drop the strict-conformance flag.
+_ssl_context = ssl.create_default_context()
+_ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+
+app = App(client=WebClient(token=os.environ["SLACK_BOT_TOKEN"], ssl=_ssl_context))
 
 # Matches github.com/<owner>/<repo>/compare/<spec>, tolerating Slack's <...|...> wrapping
 COMPARE_RE = re.compile(
