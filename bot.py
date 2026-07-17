@@ -88,15 +88,11 @@ def create_pr(p):
         "head": p["api_head"],
         "base": p["base_branch"],
         "body": "Opened automatically from a compare link shared in Slack.",
-        "maintainer_can_modify": True,
     }
-    url = f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}/pulls"
-    r = requests.post(url, headers=GH_HEADERS, json=payload, timeout=30)
-    if r.status_code == 422 and "fork_collab" in r.text:
-        # Cross-fork PR: only the fork's owner can grant maintainer_can_modify,
-        # so when the token user isn't the fork owner, retry without it.
-        del payload["maintainer_can_modify"]
-        r = requests.post(url, headers=GH_HEADERS, json=payload, timeout=30)
+    r = requests.post(
+        f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}/pulls",
+        headers=GH_HEADERS, json=payload, timeout=30,
+    )
     if r.status_code == 201:
         return "created", r.json()
     if r.status_code == 422:                     # usually "a PR already exists"
