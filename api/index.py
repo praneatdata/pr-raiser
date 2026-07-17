@@ -17,14 +17,16 @@ from bot import build_app
 
 # token_verification=False skips an auth.test round-trip on every cold start.
 bolt_app = build_app(process_before_response=True, token_verification=False)
-handler = SlackRequestHandler(bolt_app)
+# NB: must not be named `handler` — Vercel's Python runtime treats a module-level
+# `handler` as a BaseHTTPRequestHandler class and crashes on anything else.
+slack_request_handler = SlackRequestHandler(bolt_app)
 
 app = Flask(__name__)
 
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
-    return handler.handle(request)
+    return slack_request_handler.handle(request)
 
 
 @app.route("/", methods=["GET"])
