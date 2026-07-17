@@ -88,6 +88,11 @@ def create_pr(p):
         "head": p["api_head"],
         "base": p["base_branch"],
         "body": "Opened automatically from a compare link shared in Slack.",
+        # Must be an explicit False: for cross-fork PRs GitHub defaults this
+        # to true, and only the fork's owner may grant it — omitting the key
+        # still 422s with fork_collab when the token user isn't the fork owner
+        # (same bug as https://github.com/cli/cli/issues/8670).
+        "maintainer_can_modify": False,
     }
     r = requests.post(
         f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}/pulls",
