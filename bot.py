@@ -23,12 +23,22 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("pr-raiser")
 
+from repo_tokens import TOKEN_ENV_VARS
+
 GITHUB_API = "https://api.github.com"
-GH_HEADERS = {
-    "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+
+
+def gh_headers(p):
+    """Auth headers for this repo: its mapped token if configured, else GITHUB_TOKEN."""
+    env_name = TOKEN_ENV_VARS.get(f"{p['owner']}/{p['repo']}".lower())
+    token = os.environ.get(env_name) if env_name else None
+    if env_name and not token:
+        log.warning("Env var %s from repo_tokens.py is not set; falling back to GITHUB_TOKEN", env_name)
+    return {
+        "Authorization": f"Bearer {token or os.environ['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
 # Matches github.com/<owner>/<repo>/compare/<spec>, tolerating Slack's <...|...> wrapping
 COMPARE_RE = re.compile(
@@ -71,7 +81,7 @@ def find_open_pr(p):
     """Look up an already-open PR for this exact head/base pair."""
     r = requests.get(
         f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}/pulls",
-        headers=GH_HEADERS,
+        headers=gh_headers(p),
         params={
             "head": f"{p['head_owner']}:{p['head_branch']}",
             "base": p["base_branch"],
@@ -96,7 +106,7 @@ def create_pr(p):
     }
     r = requests.post(
         f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}/pulls",
-        headers=GH_HEADERS, json=payload, timeout=30,
+        headers=gh_headers(p), json=payload, timeout=30,
     )
     if r.status_code == 201:
         return "created", r.json()
