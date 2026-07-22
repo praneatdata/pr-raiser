@@ -29,8 +29,12 @@ GITHUB_API = "https://api.github.com"
 
 
 def gh_headers(p):
-    """Auth headers for this repo: its mapped token if configured, else GITHUB_TOKEN."""
-    env_name = TOKEN_ENV_VARS.get(f"{p['owner']}/{p['repo']}".lower())
+    """Auth headers for this repo: its mapped token if configured, else GITHUB_TOKEN.
+
+    Exact "owner/repo" entries take precedence over "owner/*" wildcards.
+    """
+    owner, repo = p["owner"].lower(), p["repo"].lower()
+    env_name = TOKEN_ENV_VARS.get(f"{owner}/{repo}") or TOKEN_ENV_VARS.get(f"{owner}/*")
     token = os.environ.get(env_name) if env_name else None
     if env_name and not token:
         log.warning("Env var %s from repo_tokens.py is not set; falling back to GITHUB_TOKEN", env_name)
