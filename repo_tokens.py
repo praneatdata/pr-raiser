@@ -10,7 +10,6 @@ After adding an entry, set the env var in Vercel (and .env for local use)
 and redeploy — env changes don't apply to existing deployments.
 """
 TOKEN_ENV_VARS = {
-    "vmockinc/resume-ui": "GITHUB_TOKEN",
     "vmockinc/jobs-curation": "GITHUB_TOKEN_SAGNIK",
     "vmockinc/employer-api-relations": "GITHUB_TOKEN_SAGNIK",
     "vmockinc/cmc-placement-management": "GITHUB_TOKEN_SAGNIK",
