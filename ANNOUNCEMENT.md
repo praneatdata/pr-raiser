@@ -16,6 +16,10 @@ Opening from a fork? Put the fork owner in the head:
 @mention a teammate along with your compare link (or with `/pr`) and I'll DM them the PR asking for their review:
 `github.com/vmockinc/resume-ui/compare/main...my-feature @teammate`
 
+*3.* :new: *Set a custom title & body*
+Add them after a `|` (works with both a link and `/pr`; body is optional):
+`/pr vmockinc/resume-ui main my-feature | Fix login redirect | Closes the loop bug on SSO`
+
 _As always, you can still just paste a compare link and I'll open the PR for you._
 
 Happy shipping! :tada:

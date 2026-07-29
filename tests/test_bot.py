@@ -305,3 +305,78 @@ def test_handle_message_no_dm_on_exists(monkeypatch):
                       return_value=("exists", {"html_url": "u", "number": 7})):
         bot.handle_message(event, say, client=client, context={}, logger=None)
     client.chat_postMessage.assert_not_called()
+
+
+# --- pipe splitting --------------------------------------------------------
+
+def test_split_basic():
+    assert bot.split_command_title_body("cmd | Title | Body") == ("cmd", "Title", "Body")
+
+
+def test_split_no_pipes():
+    assert bot.split_command_title_body("just a command") == ("just a command", None, None)
+
+
+def test_split_empty_title_keeps_body():
+    assert bot.split_command_title_body("cmd |  | Body") == ("cmd", None, "Body")
+
+
+def test_split_protects_mention_pipe():
+    assert bot.split_command_title_body("<@U1|alice> go | T") == ("<@U1|alice> go", "T", None)
+
+
+def test_split_protects_wrapped_url_pipe():
+    wrapped = "<https://gh/x|https://gh/x>"
+    assert bot.split_command_title_body(f"{wrapped} | T") == (wrapped, "T", None)
+
+
+# --- custom title / body ---------------------------------------------------
+
+def test_create_pr_custom_title_body():
+    resp = FakeResp(201, {"html_url": "u", "number": 1, "title": "t"})
+    with patch.object(bot.requests, "post", return_value=resp) as post:
+        bot.create_pr(dict(P, title="Custom Title", body="Custom body"))
+    j = post.call_args.kwargs["json"]
+    assert j["title"] == "Custom Title" and j["body"] == "Custom body"
+
+
+def test_create_pr_defaults_when_absent():
+    resp = FakeResp(201, {"html_url": "u", "number": 1, "title": "t"})
+    with patch.object(bot.requests, "post", return_value=resp) as post:
+        bot.create_pr(dict(P))
+    j = post.call_args.kwargs["json"]
+    assert j["title"] == "acme:feat → main" and "automatically" in j["body"]
+
+
+def test_handle_message_custom_title_body(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    event = {"text": "github.com/acme/widgets/compare/main...feat | My Title | My body", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})) as cp:
+        bot.handle_message(event, _say(), None)
+    p = cp.call_args.args[0]
+    assert p.get("title") == "My Title" and p.get("body") == "My body"
+
+
+def test_handle_message_incidental_pipe_still_opens(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    # link is NOT in the leading part → pipes ignored, PR still opens, no custom title
+    event = {"text": "fyi | check github.com/acme/widgets/compare/main...feat", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})) as cp:
+        bot.handle_message(event, _say(), None)
+    p = cp.call_args.args[0]
+    assert "title" not in p and "body" not in p
+
+
+def test_handle_message_wrapped_url_with_title(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    wrapped = ("<https://github.com/acme/widgets/compare/main...feat"
+               "|github.com/acme/widgets/compare/main...feat>")
+    event = {"text": f"{wrapped} | Real Title", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})) as cp:
+        bot.handle_message(event, _say(), None)
+    p = cp.call_args.args[0]
+    # the URL's internal pipe was NOT treated as a delimiter
+    assert p["owner"] == "acme" and p.get("title") == "Real Title"

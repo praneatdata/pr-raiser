@@ -87,6 +87,35 @@ def dm_approvers(client, user_ids, pr, logger=None):
             (logger or log).warning("Couldn't DM approver %s: %s", uid, e)
 
 
+def _split_top_level(text, sep="|"):
+    """Split on `sep`, ignoring separators inside Slack <...> entities.
+
+    Slack wraps links/mentions as <url|label> / <@U123|name>, so a naive split
+    on '|' would tear those apart; we only split at depth 0.
+    """
+    parts, depth, cur = [], 0, []
+    for ch in text or "":
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    return [p.strip() for p in parts]
+
+
+def split_command_title_body(text):
+    """`<command> | title | body` -> (command, title|None, body|None) on top-level pipes."""
+    parts = _split_top_level(text)
+    title = parts[1] if len(parts) > 1 and parts[1] else None
+    body = parts[2] if len(parts) > 2 and parts[2] else None
+    return parts[0], title, body
+
+
 def parse_compare(owner, repo, spec):
     """Turn a compare spec (base...head) into the fields GitHub's create-PR API needs."""
     sep = "..." if "..." in spec else ".." if ".." in spec else None
@@ -134,10 +163,10 @@ def find_open_pr(p):
 
 def create_pr(p):
     payload = {
-        "title": f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
+        "title": p.get("title") or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
         "head": p["api_head"],
         "base": p["base_branch"],
-        "body": "Opened automatically from a compare link shared in Slack.",
+        "body": p.get("body") or "Opened automatically from a compare link shared in Slack.",
         # Must be an explicit False: for cross-fork PRs GitHub defaults this
         # to true, and only the fork's owner may grant it — omitting the key
         # still 422s with fork_collab when the token user isn't the fork owner
@@ -177,7 +206,15 @@ def handle_message(event, say, client=None, context=None, logger=None):
     if event.get("bot_id") or event.get("subtype"):
         return  # ignore bots (incl. ourselves) and edits / joins / etc.
 
-    match = COMPARE_RE.search(event.get("text", "") or "")
+    raw = event.get("text", "") or ""
+    cmd_part, title, body = split_command_title_body(raw)
+    # Treat pipes as title/body delimiters only when the compare link is in the
+    # leading part; an incidental "|" in an ordinary message must not break
+    # detection or hijack the title/body.
+    if not COMPARE_RE.search(cmd_part):
+        cmd_part, title, body = raw, None, None
+
+    match = COMPARE_RE.search(cmd_part)
     if not match:
         return
 
@@ -186,6 +223,10 @@ def handle_message(event, say, client=None, context=None, logger=None):
     if not p:
         say(text=":warning: I found a compare link but couldn't parse it.", thread_ts=thread_ts)
         return
+    if title:
+        p["title"] = title
+    if body:
+        p["body"] = body
 
     log.info("Compare link from %s: %s/%s  %s -> %s",
              event.get("user"), p["owner"], p["repo"], p["api_head"], p["base_branch"])
@@ -204,10 +245,10 @@ def handle_message(event, say, client=None, context=None, logger=None):
     say(text=text, thread_ts=thread_ts)
 
     if status == "created":
-        # DM anyone @mentioned in the original message (excluding the bot) the
-        # PR link, asking them to approve.
+        # DM anyone @mentioned in the command part (excluding the bot) the PR
+        # link, asking them to approve.
         bot_id = (context or {}).get("bot_user_id")
-        approver_ids = mentioned_user_ids(event.get("text", ""), exclude=bot_id)
+        approver_ids = mentioned_user_ids(cmd_part, exclude=bot_id)
         if approver_ids and client is not None:
             dm_approvers(client, approver_ids, result, logger)
 
@@ -237,12 +278,18 @@ def parse_pr_command(text):
 def handle_pr_command(ack, command, respond, client=None, context=None, logger=None):
     ack()
     text = command.get("text", "")
-    p = parse_pr_command(text)
+    cmd_part, title, body = split_command_title_body(text)
+    p = parse_pr_command(cmd_part)
     if not p:
         respond(":warning: Usage: `/pr owner/repo base head`\n"
                 "• fork PR: `/pr owner/repo base forkowner:branch`\n"
-                "• compare style also works: `/pr owner/repo base...head`")
+                "• compare style also works: `/pr owner/repo base...head`\n"
+                "• custom title/body: `/pr owner/repo base head | Title | Body`")
         return
+    if title:
+        p["title"] = title
+    if body:
+        p["body"] = body
 
     try:
         status, result = create_pr(p)
@@ -255,7 +302,7 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
 
     if status == "created":
         bot_id = (context or {}).get("bot_user_id")
-        approver_ids = mentioned_user_ids(text, exclude=bot_id)
+        approver_ids = mentioned_user_ids(cmd_part, exclude=bot_id)
         if approver_ids and client is not None:
             dm_approvers(client, approver_ids, result, logger)
 

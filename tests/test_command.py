@@ -107,6 +107,28 @@ def test_command_cross_fork(text, expected_head):
     assert p["base_branch"] == "uat" and p["api_head"] == expected_head
 
 
+def test_command_custom_title_body():
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_pr_command(ack, _cmd("acme/widgets main feat | My Title | My body"),
+                              respond, client=client, context={}, logger=None)
+    p = cp.call_args.args[0]
+    assert p.get("title") == "My Title" and p.get("body") == "My body"
+
+
+def test_command_title_body_with_approver():
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_pr_command(ack, _cmd("acme/widgets main feat <@UP> | Title | Body"),
+                              respond, client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    p = cp.call_args.args[0]
+    assert p.get("title") == "Title" and p.get("body") == "Body"
+    client.chat_postMessage.assert_called_once()
+    assert client.chat_postMessage.call_args.kwargs["channel"] == "UP"
+
+
 def test_command_error_reports_detail():
     ack, respond = MagicMock(), MagicMock()
     err = FakeResp(422, {"message": "Validation Failed",
