@@ -10,6 +10,7 @@ so it works either way.
 Requires SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET and GITHUB_TOKEN set in the
 Vercel project's environment variables.
 """
+import logging
 import os
 import sys
 import traceback
@@ -18,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, request
 
+log = logging.getLogger("pr-raiser")
 app = Flask(__name__)
 
 # Initialize guarded, so a misconfiguration (missing env var, import problem)
@@ -60,6 +62,18 @@ def route(subpath):
     if request.method == "POST" and tail.endswith("/slack/events"):
         if _init_error:
             return {"error": "app failed to initialize; see GET /"}, 500
+        # Slack retries an event when our first response misses its 3s ack
+        # deadline (common on serverless cold starts). That first invocation
+        # still runs to completion and posts the reply, so ack retried event
+        # deliveries without reprocessing — otherwise every slow cold start
+        # posts a duplicate. Never skip url_verification (a setup handshake).
+        if request.headers.get("X-Slack-Retry-Num"):
+            body = request.get_json(silent=True) or {}
+            if body.get("type") == "event_callback":
+                log.info("Skipping Slack retry #%s (reason: %s)",
+                         request.headers.get("X-Slack-Retry-Num"),
+                         request.headers.get("X-Slack-Retry-Reason"))
+                return "", 200
         return slack_request_handler.handle(request)
 
     if tail.endswith("/debug"):
