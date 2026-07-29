@@ -5,10 +5,17 @@ features:
   bot_user:
     display_name: pr-raiser
     always_online: true
+  slash_commands:
+    - command: /pr
+      url: https://pr-raiser.vercel.app/slack/events
+      description: Open a PR from base/head without a compare link
+      usage_hint: owner/repo base head
+      should_escape: true
 oauth_config:
   scopes:
     bot:
       - chat:write
+      - commands
       - channels:history
       - groups:history
       - im:history

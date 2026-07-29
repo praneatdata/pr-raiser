@@ -157,6 +157,22 @@ def create_pr(p):
     return "error", r
 
 
+def _pr_result_text(status, result):
+    """Slack text for a create_pr outcome (created / exists / error)."""
+    if status == "created":
+        return f":rocket: Opened <{result['html_url']}|PR #{result['number']}> — {result['title']}"
+    if status == "exists":
+        return f":information_source: A PR is already open: <{result['html_url']}|PR #{result['number']}>"
+    try:
+        body = result.json()
+        detail = body.get("message", "")
+        for err in body.get("errors", []):
+            detail += f"\n• {err.get('message', err)}"
+    except Exception:
+        detail = result.text[:400]
+    return f":x: Couldn't open the PR (HTTP {result.status_code}).\n{detail}"
+
+
 def handle_message(event, say, client=None, context=None, logger=None):
     if event.get("bot_id") or event.get("subtype"):
         return  # ignore bots (incl. ourselves) and edits / joins / etc.
@@ -180,32 +196,67 @@ def handle_message(event, say, client=None, context=None, logger=None):
         say(text=f":x: GitHub request failed: {e}", thread_ts=thread_ts)
         return
 
+    text = _pr_result_text(status, result)
     if status == "created":
-        text = f":rocket: Opened <{result['html_url']}|PR #{result['number']}> — {result['title']}"
         mentions = approver_mentions(p)
         if mentions:
             text += f"\n{mentions} — please review and approve when you can."
-        say(text=text, thread_ts=thread_ts)
+    say(text=text, thread_ts=thread_ts)
 
+    if status == "created":
         # DM anyone @mentioned in the original message (excluding the bot) the
         # PR link, asking them to approve.
         bot_id = (context or {}).get("bot_user_id")
         approver_ids = mentioned_user_ids(event.get("text", ""), exclude=bot_id)
         if approver_ids and client is not None:
             dm_approvers(client, approver_ids, result, logger)
-    elif status == "exists":
-        say(text=f":information_source: A PR is already open: <{result['html_url']}|PR #{result['number']}>",
-            thread_ts=thread_ts)
+
+
+def parse_pr_command(text):
+    """Parse `/pr` text into the fields create_pr needs, or None if malformed.
+
+    Accepts:  <owner/repo> <base>...<head>   or   <owner/repo> <base> <head>
+    Any @mentions (approvers) are ignored here — the handler pulls those out
+    separately. <head> may be a cross-fork spec like someuser:repo:branch.
+    """
+    refs = MENTION_RE.sub("", text or "")  # drop @approvers before tokenizing
+    toks = refs.split()
+    if len(toks) < 2 or "/" not in toks[0]:
+        return None
+    owner, repo = toks[0].split("/", 1)
+    rest = toks[1:]
+    if len(rest) == 1:
+        spec = rest[0]                       # base...head
+    elif len(rest) == 2:
+        spec = f"{rest[0]}...{rest[1]}"       # base head
     else:
-        try:
-            body = result.json()
-            detail = body.get("message", "")
-            for err in body.get("errors", []):
-                detail += f"\n• {err.get('message', err)}"
-        except Exception:
-            detail = result.text[:400]
-        say(text=f":x: Couldn't open the PR (HTTP {result.status_code}).\n{detail}",
-            thread_ts=thread_ts)
+        return None
+    return parse_compare(owner, repo, spec)
+
+
+def handle_pr_command(ack, command, respond, client=None, context=None, logger=None):
+    ack()
+    text = command.get("text", "")
+    p = parse_pr_command(text)
+    if not p:
+        respond(":warning: Usage: `/pr owner/repo base head`  "
+                "(or `/pr owner/repo base...head`)")
+        return
+
+    try:
+        status, result = create_pr(p)
+    except requests.RequestException as e:
+        respond(f":x: GitHub request failed: {e}")
+        return
+
+    # in_channel so the whole channel sees the PR, matching the link flow
+    respond(text=_pr_result_text(status, result), response_type="in_channel")
+
+    if status == "created":
+        bot_id = (context or {}).get("bot_user_id")
+        approver_ids = mentioned_user_ids(text, exclude=bot_id)
+        if approver_ids and client is not None:
+            dm_approvers(client, approver_ids, result, logger)
 
 
 def build_app(process_before_response=False, token_verification=True):
@@ -228,4 +279,5 @@ def build_app(process_before_response=False, token_verification=True):
         token_verification_enabled=token_verification,
     )
     app.event("message")(handle_message)
+    app.command("/pr")(handle_pr_command)
     return app

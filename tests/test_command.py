@@ -1,0 +1,102 @@
+"""Tests for the /pr slash command in bot.py."""
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import bot
+
+
+class FakeResp:
+    def __init__(self, status_code=201, json_data=None, text=""):
+        self.status_code = status_code
+        self._json = json_data or {}
+        self.text = text
+
+    def json(self):
+        return self._json
+
+
+# --- parse_pr_command ------------------------------------------------------
+
+def test_parse_two_refs():
+    p = bot.parse_pr_command("acme/widgets main feature")
+    assert (p["owner"], p["repo"], p["base_branch"], p["api_head"]) == \
+        ("acme", "widgets", "main", "feature")
+
+
+def test_parse_compare_style_spec():
+    p = bot.parse_pr_command("acme/widgets main...feature")
+    assert p["base_branch"] == "main" and p["api_head"] == "feature"
+
+
+def test_parse_cross_fork():
+    p = bot.parse_pr_command("vmockinc/cmc-notes uat someuser:cmc-notes:feat")
+    assert p["api_head"] == "someuser:feat" and p["base_branch"] == "uat"
+
+
+def test_parse_ignores_mentions():
+    p = bot.parse_pr_command("acme/widgets main feature <@U123|alice>")
+    assert p is not None and p["api_head"] == "feature"
+
+
+@pytest.mark.parametrize("text", ["", "onlyonetoken", "norepo main feature",
+                                  "acme/widgets a b c d"])
+def test_parse_malformed_returns_none(text):
+    assert bot.parse_pr_command(text) is None
+
+
+# --- handle_pr_command -----------------------------------------------------
+
+def _cmd(text):
+    return {"text": text, "channel_id": "C1", "user_id": "U1"}
+
+
+def test_command_created_acks_and_responds_in_channel():
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})):
+        bot.handle_pr_command(ack, _cmd("acme/widgets main feature"),
+                              respond, client=client, context={}, logger=None)
+    ack.assert_called_once()
+    kw = respond.call_args.kwargs
+    assert kw["response_type"] == "in_channel" and "PR #5" in kw["text"]
+
+
+def test_command_malformed_shows_usage():
+    ack, respond = MagicMock(), MagicMock()
+    bot.handle_pr_command(ack, _cmd("garbage"), respond)
+    ack.assert_called_once()
+    # usage hint sent, create_pr never attempted
+    assert "Usage" in respond.call_args.args[0] or "Usage" in respond.call_args.kwargs.get("text", "")
+
+
+def test_command_dms_inline_approver():
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "https://gh/pr/5",
+                                                "number": 5, "title": "t"})):
+        bot.handle_pr_command(
+            ack, _cmd("acme/widgets main feature <@UPERSON>"),
+            respond, client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    client.chat_postMessage.assert_called_once()
+    assert client.chat_postMessage.call_args.kwargs["channel"] == "UPERSON"
+
+
+def test_command_exists_responds_without_dm():
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("exists", {"html_url": "u", "number": 7})):
+        bot.handle_pr_command(ack, _cmd("acme/widgets main feature <@UPERSON>"),
+                              respond, client=client, context={}, logger=None)
+    assert "already open" in respond.call_args.kwargs["text"]
+    client.chat_postMessage.assert_not_called()
+
+
+def test_command_error_reports_detail():
+    ack, respond = MagicMock(), MagicMock()
+    err = FakeResp(422, {"message": "Validation Failed",
+                         "errors": [{"message": "fork_collab"}]})
+    with patch.object(bot, "create_pr", return_value=("error", err)):
+        bot.handle_pr_command(ack, _cmd("acme/widgets main feature"), respond)
+    sent = respond.call_args.kwargs.get("text") or respond.call_args.args[0]
+    assert "422" in sent and "fork_collab" in sent
