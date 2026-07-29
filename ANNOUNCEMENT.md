@@ -1,34 +1,25 @@
-# PR Raiser — team announcement (draft)
+<!-- Paste-ready Slack message (mrkdwn). Send AFTER the `improvements` branch
+     is deployed — /pr and DM-for-approval only work once it's live.
+     Copy everything below this comment. -->
 
-> Send this in Slack **after** the `improvements` branch is deployed (feature #3
-> below — DM-for-approval — is not live until then).
+:mega: *Meet PR Raiser — I open your pull requests for you!*
 
----
-
-📢 *Meet PR Raiser — I open your pull requests for you!*
-
-*What I do:* drop a GitHub **compare** link in any channel I'm in (or DM me), and I'll open the pull request automatically and reply with the link. No more clicking through GitHub.
-
-*How to use me:*
+Drop a GitHub *compare* link in any channel I'm in (or DM me) and I'll open the pull request automatically and reply with the link. :rocket:
 
 *1. Open a PR* — paste a compare link:
 `github.com/vmockinc/resume-ui/compare/main...my-feature`
-→ I reply: 🚀 Opened PR #123
 
-*2. From your fork (cross-fork PR)* — works out of the box:
+*2. From your fork* (cross-fork PR) — works out of the box:
 `github.com/vmockinc/cmc-notes/compare/uat...yourname:cmc-notes:your-branch`
 
-*2b. 🆕 No compare link? Use the `/pr` command* — just give repo, base, and head:
+*3.* :new: *No compare link? Use* `/pr` — just give repo, base, and head:
 `/pr vmockinc/resume-ui main my-feature`
-→ I open the PR and post the link right here.
 
-*3. 🆕 Ask someone to approve* — @mention them along with the link and I'll DM them the PR asking for their review:
+*4.* :new: *Ask someone to approve* — @mention them with the link and I'll DM them the PR to review:
 `github.com/vmockinc/resume-ui/compare/main...my-feature @teammate`
-→ I open the PR, reply here, and DM @teammate the link to approve.
 
-*Good to know:*
+*Good to know*
 • If a PR already exists for that branch, I'll just point you to it.
-• Add me to a channel first (or DM me) so I can see your links.
-• You can @mention me too: `@pr-raiser <compare link> @teammate`
+• Add me to the channel first (or DM me) so I can see your links.
 
-Happy shipping! 🎉
+Happy shipping! :tada:
