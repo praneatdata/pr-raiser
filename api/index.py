@@ -25,6 +25,7 @@ try:
     from slack_bolt.adapter.flask import SlackRequestHandler
 
     from bot import build_app
+    
 
     bolt_app = build_app(process_before_response=True, token_verification=False)
     slack_request_handler = SlackRequestHandler(bolt_app)
