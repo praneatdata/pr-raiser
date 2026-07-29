@@ -165,3 +165,143 @@ def test_handle_message_uses_thread_ts_when_present():
                       return_value=("created", {"html_url": "u", "number": 1, "title": "t"})):
         bot.handle_message(event, say, None)
     assert say.call_args.kwargs["thread_ts"] == "0.9"
+
+
+# --- approver mentions -----------------------------------------------------
+
+def test_approver_mentions_none(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    assert bot.approver_mentions({"owner": "acme", "repo": "widgets"}) == ""
+
+
+def test_approver_mentions_exact_case_insensitive(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {"acme/widgets": ["U1", "U2"]})
+    assert bot.approver_mentions({"owner": "ACME", "repo": "Widgets"}) == "<@U1> <@U2>"
+
+
+def test_approver_mentions_wildcard(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {"acme/*": ["U9"]})
+    assert bot.approver_mentions({"owner": "acme", "repo": "anything"}) == "<@U9>"
+
+
+def test_approver_mentions_exact_beats_wildcard(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {"acme/widgets": ["U1"], "acme/*": ["U9"]})
+    assert bot.approver_mentions({"owner": "acme", "repo": "widgets"}) == "<@U1>"
+
+
+def test_handle_message_created_tags_approvers(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {"acme/widgets": ["U1", "U2"]})
+    say = _say()
+    event = {"text": "github.com/acme/widgets/compare/main...feat", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})):
+        bot.handle_message(event, say, None)
+    msg = say.call_args.kwargs["text"]
+    assert "<@U1> <@U2>" in msg and "approve" in msg
+
+
+def test_handle_message_created_no_approvers_is_plain(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say = _say()
+    event = {"text": "github.com/acme/widgets/compare/main...feat", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})):
+        bot.handle_message(event, say, None)
+    assert "<@" not in say.call_args.kwargs["text"]
+
+
+def test_handle_message_exists_does_not_tag(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {"acme/widgets": ["U1"]})
+    say = _say()
+    event = {"text": "github.com/acme/widgets/compare/main...feat", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("exists", {"html_url": "u", "number": 7})):
+        bot.handle_message(event, say, None)
+    assert "<@" not in say.call_args.kwargs["text"]
+
+
+# --- inline @mention extraction --------------------------------------------
+
+def test_mentioned_user_ids_extracts_and_dedupes():
+    text = "hey <@U111> and <@U222> and <@U111> again"
+    assert bot.mentioned_user_ids(text) == ["U111", "U222"]
+
+
+def test_mentioned_user_ids_handles_labelled_form():
+    assert bot.mentioned_user_ids("ping <@U111|alice>") == ["U111"]
+
+
+def test_mentioned_user_ids_excludes_bot():
+    text = "<@UBOT> please open <@U222>"
+    assert bot.mentioned_user_ids(text, exclude="UBOT") == ["U222"]
+
+
+def test_mentioned_user_ids_empty():
+    assert bot.mentioned_user_ids("no mentions here") == []
+    assert bot.mentioned_user_ids(None) == []
+
+
+# --- dm_approvers ----------------------------------------------------------
+
+PR = {"html_url": "https://gh/pr/3", "number": 3, "title": "acme:feat → main"}
+
+
+def test_dm_approvers_dms_each_user():
+    client = MagicMock()
+    bot.dm_approvers(client, ["U1", "U2"], PR)
+    assert client.chat_postMessage.call_count == 2
+    channels = {c.kwargs["channel"] for c in client.chat_postMessage.call_args_list}
+    assert channels == {"U1", "U2"}
+    # the DM carries the PR link and an approval ask
+    sent = client.chat_postMessage.call_args_list[0].kwargs["text"]
+    assert "https://gh/pr/3" in sent and "approve" in sent.lower()
+
+
+def test_dm_approvers_survives_one_failure():
+    client = MagicMock()
+    client.chat_postMessage.side_effect = [Exception("no_such_user"), None]
+    bot.dm_approvers(client, ["Ubad", "Ugood"], PR)  # must not raise
+    assert client.chat_postMessage.call_count == 2
+
+
+# --- handle_message inline-mention DM flow ---------------------------------
+
+def test_handle_message_dms_inline_mention(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say, client = _say(), MagicMock()
+    event = {
+        "text": "<@UBOT> github.com/acme/widgets/compare/main...feat <@UPERSON>",
+        "ts": "1.2",
+    }
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "https://gh/pr/5",
+                                                "number": 5, "title": "t"})):
+        bot.handle_message(event, say, client=client,
+                           context={"bot_user_id": "UBOT"}, logger=None)
+    # thread reply still posted
+    say.assert_called_once()
+    # the mentioned person (not the bot) is DMed the PR link
+    client.chat_postMessage.assert_called_once()
+    kw = client.chat_postMessage.call_args.kwargs
+    assert kw["channel"] == "UPERSON" and "https://gh/pr/5" in kw["text"]
+
+
+def test_handle_message_no_dm_when_only_bot_mentioned(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say, client = _say(), MagicMock()
+    event = {"text": "<@UBOT> github.com/acme/widgets/compare/main...feat", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})):
+        bot.handle_message(event, say, client=client,
+                           context={"bot_user_id": "UBOT"}, logger=None)
+    client.chat_postMessage.assert_not_called()
+
+
+def test_handle_message_no_dm_on_exists(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say, client = _say(), MagicMock()
+    event = {"text": "github.com/acme/widgets/compare/main...feat <@UPERSON>", "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("exists", {"html_url": "u", "number": 7})):
+        bot.handle_message(event, say, client=client, context={}, logger=None)
+    client.chat_postMessage.assert_not_called()

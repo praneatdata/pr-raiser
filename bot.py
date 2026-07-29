@@ -23,9 +23,22 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("pr-raiser")
 
+from approvers import APPROVERS
 from repo_tokens import TOKEN_ENV_VARS
 
 GITHUB_API = "https://api.github.com"
+
+
+def _match_repo(mapping, owner, repo):
+    """Look up owner/repo in a mapping, honoring an 'owner/*' wildcard (exact wins)."""
+    owner, repo = owner.lower(), repo.lower()
+    return mapping.get(f"{owner}/{repo}") or mapping.get(f"{owner}/*")
+
+
+def approver_mentions(p):
+    """Space-joined Slack @mentions for the repo's configured approvers ('' if none)."""
+    ids = _match_repo(APPROVERS, p["owner"], p["repo"]) or []
+    return " ".join(f"<@{uid}>" for uid in ids)
 
 
 def gh_headers(p):
@@ -33,8 +46,7 @@ def gh_headers(p):
 
     Exact "owner/repo" entries take precedence over "owner/*" wildcards.
     """
-    owner, repo = p["owner"].lower(), p["repo"].lower()
-    env_name = TOKEN_ENV_VARS.get(f"{owner}/{repo}") or TOKEN_ENV_VARS.get(f"{owner}/*")
+    env_name = _match_repo(TOKEN_ENV_VARS, p["owner"], p["repo"])
     token = os.environ.get(env_name) if env_name else None
     if env_name and not token:
         log.warning("Env var %s from repo_tokens.py is not set; falling back to GITHUB_TOKEN", env_name)
@@ -49,6 +61,30 @@ COMPARE_RE = re.compile(
     r"github\.com/(?P<owner>[^/\s<>|]+)/(?P<repo>[^/\s<>|]+)/compare/(?P<spec>[^\s?#<>|]+)",
     re.IGNORECASE,
 )
+
+# Slack renders "@user" in message text as <@U012ABC> or <@U012ABC|display-name>.
+MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+
+def mentioned_user_ids(text, exclude=None):
+    """Distinct Slack user IDs @mentioned in `text`, in order, minus `exclude` (the bot)."""
+    seen, out = set(), []
+    for uid in MENTION_RE.findall(text or ""):
+        if uid != exclude and uid not in seen:
+            seen.add(uid)
+            out.append(uid)
+    return out
+
+
+def dm_approvers(client, user_ids, pr, logger=None):
+    """DM each user the PR link, asking them to approve. Best-effort, per user."""
+    link = f"<{pr['html_url']}|PR #{pr['number']}> — {pr['title']}"
+    text = f":eyes: Please review and approve {link}"
+    for uid in user_ids:
+        try:
+            client.chat_postMessage(channel=uid, text=text)
+        except Exception as e:  # a bad/unreachable user shouldn't sink the rest
+            (logger or log).warning("Couldn't DM approver %s: %s", uid, e)
 
 
 def parse_compare(owner, repo, spec):
@@ -121,7 +157,7 @@ def create_pr(p):
     return "error", r
 
 
-def handle_message(event, say, logger):
+def handle_message(event, say, client=None, context=None, logger=None):
     if event.get("bot_id") or event.get("subtype"):
         return  # ignore bots (incl. ourselves) and edits / joins / etc.
 
@@ -145,8 +181,18 @@ def handle_message(event, say, logger):
         return
 
     if status == "created":
-        say(text=f":rocket: Opened <{result['html_url']}|PR #{result['number']}> — {result['title']}",
-            thread_ts=thread_ts)
+        text = f":rocket: Opened <{result['html_url']}|PR #{result['number']}> — {result['title']}"
+        mentions = approver_mentions(p)
+        if mentions:
+            text += f"\n{mentions} — please review and approve when you can."
+        say(text=text, thread_ts=thread_ts)
+
+        # DM anyone @mentioned in the original message (excluding the bot) the
+        # PR link, asking them to approve.
+        bot_id = (context or {}).get("bot_user_id")
+        approver_ids = mentioned_user_ids(event.get("text", ""), exclude=bot_id)
+        if approver_ids and client is not None:
+            dm_approvers(client, approver_ids, result, logger)
     elif status == "exists":
         say(text=f":information_source: A PR is already open: <{result['html_url']}|PR #{result['number']}>",
             thread_ts=thread_ts)
