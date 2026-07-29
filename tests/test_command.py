@@ -92,6 +92,21 @@ def test_command_exists_responds_without_dm():
     client.chat_postMessage.assert_not_called()
 
 
+@pytest.mark.parametrize("text,expected_head", [
+    ("vmockinc/cmc-notes uat someuser:cmc-notes:feat", "someuser:feat"),  # 3-part fork head
+    ("vmockinc/cmc-notes uat someuser:feat", "someuser:feat"),            # 2-part fork head
+    ("vmockinc/cmc-notes uat...someuser:feat", "someuser:feat"),          # compare-style fork
+])
+def test_command_cross_fork(text, expected_head):
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_pr_command(ack, _cmd(text), respond, client=client, context={}, logger=None)
+    p = cp.call_args.args[0]
+    assert p["owner"] == "vmockinc" and p["repo"] == "cmc-notes"
+    assert p["base_branch"] == "uat" and p["api_head"] == expected_head
+
+
 def test_command_error_reports_detail():
     ack, respond = MagicMock(), MagicMock()
     err = FakeResp(422, {"message": "Validation Failed",

@@ -239,8 +239,9 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
     text = command.get("text", "")
     p = parse_pr_command(text)
     if not p:
-        respond(":warning: Usage: `/pr owner/repo base head`  "
-                "(or `/pr owner/repo base...head`)")
+        respond(":warning: Usage: `/pr owner/repo base head`\n"
+                "• fork PR: `/pr owner/repo base forkowner:branch`\n"
+                "• compare style also works: `/pr owner/repo base...head`")
         return
 
     try:

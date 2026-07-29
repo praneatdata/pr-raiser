@@ -9,6 +9,8 @@ Two new ways to open PRs faster:
 *1.* :new: *`/pr` — no compare link needed*
 Give me the repo, base, and head, and I'll open the PR and post the link right here:
 `/pr vmockinc/resume-ui main my-feature`
+Opening from a fork? Put the fork owner in the head:
+`/pr vmockinc/resume-ui uat yourname:your-branch`
 
 *2.* :new: *Loop in an approver automatically*
 @mention a teammate along with your compare link (or with `/pr`) and I'll DM them the PR asking for their review:
