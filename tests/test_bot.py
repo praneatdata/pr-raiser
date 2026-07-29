@@ -369,6 +369,25 @@ def test_handle_message_incidental_pipe_still_opens(monkeypatch):
     assert "title" not in p and "body" not in p
 
 
+def test_handle_message_approver_after_body_is_dmed_and_stripped(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say, client = _say(), MagicMock()
+    event = {"text": "github.com/acme/widgets/compare/main...feat | Title | ping <@UP|p>",
+             "ts": "1.2"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})) as cp:
+        bot.handle_message(event, say, client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    p = cp.call_args.args[0]
+    assert p.get("body") == "ping"  # mention stripped from body
+    client.chat_postMessage.assert_called_once()
+    assert client.chat_postMessage.call_args.kwargs["channel"] == "UP"
+
+
+def test_strip_mentions():
+    assert bot._strip_mentions("hello <@U1|x> world") == "hello world"
+    assert bot._strip_mentions("<@U1>") == ""
+
+
 def test_handle_message_wrapped_url_with_title(monkeypatch):
     monkeypatch.setattr(bot, "APPROVERS", {})
     wrapped = ("<https://github.com/acme/widgets/compare/main...feat"

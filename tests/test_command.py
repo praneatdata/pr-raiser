@@ -129,6 +129,24 @@ def test_command_title_body_with_approver():
     assert client.chat_postMessage.call_args.kwargs["channel"] == "UP"
 
 
+def test_command_approver_after_body_pipes_is_dmed_and_stripped():
+    # regression: mention placed at the very end (in the body segment) must
+    # still be treated as an approver and removed from the PR body.
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    text = ("vmockinc/dashboard-api-resume-builder master praneatdata:headers "
+            "| Added Headers | This is also a test PR for my new feature <@USAKSHAN|Saksham>")
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_pr_command(ack, _cmd(text), respond,
+                              client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    p = cp.call_args.args[0]
+    assert p["api_head"] == "praneatdata:headers" and p["base_branch"] == "master"
+    assert p["title"] == "Added Headers"
+    assert p["body"] == "This is also a test PR for my new feature"  # mention stripped
+    client.chat_postMessage.assert_called_once()
+    assert client.chat_postMessage.call_args.kwargs["channel"] == "USAKSHAN"
+
+
 def test_command_error_reports_detail():
     ack, respond = MagicMock(), MagicMock()
     err = FakeResp(422, {"message": "Validation Failed",

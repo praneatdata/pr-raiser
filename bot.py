@@ -76,6 +76,11 @@ def mentioned_user_ids(text, exclude=None):
     return out
 
 
+def _strip_mentions(text):
+    """Remove @mention tokens and tidy whitespace — for cleaning a title/body."""
+    return re.sub(r"\s{2,}", " ", MENTION_RE.sub("", text or "")).strip()
+
+
 def dm_approvers(client, user_ids, pr, logger=None):
     """DM each user the PR link, asking them to approve. Best-effort, per user."""
     link = f"<{pr['html_url']}|PR #{pr['number']}> — {pr['title']}"
@@ -224,9 +229,9 @@ def handle_message(event, say, client=None, context=None, logger=None):
         say(text=":warning: I found a compare link but couldn't parse it.", thread_ts=thread_ts)
         return
     if title:
-        p["title"] = title
+        p["title"] = _strip_mentions(title)
     if body:
-        p["body"] = body
+        p["body"] = _strip_mentions(body)
 
     log.info("Compare link from %s: %s/%s  %s -> %s",
              event.get("user"), p["owner"], p["repo"], p["api_head"], p["base_branch"])
@@ -245,10 +250,10 @@ def handle_message(event, say, client=None, context=None, logger=None):
     say(text=text, thread_ts=thread_ts)
 
     if status == "created":
-        # DM anyone @mentioned in the command part (excluding the bot) the PR
-        # link, asking them to approve.
+        # DM anyone @mentioned anywhere in the message (excluding the bot) the
+        # PR link, asking them to approve.
         bot_id = (context or {}).get("bot_user_id")
-        approver_ids = mentioned_user_ids(cmd_part, exclude=bot_id)
+        approver_ids = mentioned_user_ids(raw, exclude=bot_id)
         if approver_ids and client is not None:
             dm_approvers(client, approver_ids, result, logger)
 
@@ -287,9 +292,9 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
                 "• custom title/body: `/pr owner/repo base head | Title | Body`")
         return
     if title:
-        p["title"] = title
+        p["title"] = _strip_mentions(title)
     if body:
-        p["body"] = body
+        p["body"] = _strip_mentions(body)
 
     try:
         status, result = create_pr(p)
@@ -301,8 +306,10 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
     respond(text=_pr_result_text(status, result), response_type="in_channel")
 
     if status == "created":
+        # approvers may be @mentioned anywhere in the command, incl. after the
+        # title/body pipes — scan the whole text, not just the command part.
         bot_id = (context or {}).get("bot_user_id")
-        approver_ids = mentioned_user_ids(cmd_part, exclude=bot_id)
+        approver_ids = mentioned_user_ids(text, exclude=bot_id)
         if approver_ids and client is not None:
             dm_approvers(client, approver_ids, result, logger)
 
