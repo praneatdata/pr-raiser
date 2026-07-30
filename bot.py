@@ -286,8 +286,20 @@ def parse_pr_command(text):
 
 
 def handle_pr_command(ack, command, respond, client=None, context=None, logger=None):
-    ack()
     text = command.get("text", "")
+    if not text.strip():
+        # no args → open the guided form (modal)
+        ack()
+        if client is not None:
+            try:
+                client.views_open(trigger_id=command["trigger_id"],
+                                  view=build_pr_modal(command.get("channel_id", "")))
+            except Exception as e:
+                (logger or log).warning("views_open failed: %s", e)
+                respond(":warning: Couldn't open the form. Usage: `/pr owner/repo base head`")
+        return
+
+    ack()
     cmd_part, title, body = split_command_title_body(text)
     p = parse_pr_command(cmd_part)
     if not p:
@@ -319,6 +331,97 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
             dm_approvers(client, approver_ids, result, requester=command.get("user_id"), logger=logger)
 
 
+def _input_block(block_id, label, placeholder=None, multiline=False, optional=False):
+    element = {"type": "plain_text_input", "action_id": "v", "multiline": multiline}
+    if placeholder:
+        element["placeholder"] = {"type": "plain_text", "text": placeholder}
+    return {"type": "input", "block_id": block_id, "optional": optional,
+            "label": {"type": "plain_text", "text": label}, "element": element}
+
+
+def build_pr_modal(channel_id=""):
+    """The guided PR form opened by a bare `/pr`. channel_id is stashed so the
+    submission handler knows where to post the result."""
+    approver = {"type": "multi_users_select", "action_id": "v",
+                "placeholder": {"type": "plain_text", "text": "Pick teammates (optional)"}}
+    return {
+        "type": "modal",
+        "callback_id": "pr_modal",
+        "private_metadata": channel_id or "",
+        "title": {"type": "plain_text", "text": "Open a PR"},
+        "submit": {"type": "plain_text", "text": "Open PR"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui"),
+            _input_block("base", "Base branch", "main"),
+            _input_block("head", "Head branch", "my-feature  or  forkowner:branch"),
+            _input_block("title", "Title (optional)", optional=True),
+            _input_block("body", "Body (optional)", multiline=True, optional=True),
+            {"type": "input", "block_id": "approvers", "optional": True,
+             "label": {"type": "plain_text", "text": "Request approval from"},
+             "element": approver},
+        ],
+    }
+
+
+def _modal_value(state, block, key="value"):
+    """Pull one field's value from a modal's state, regardless of its action_id."""
+    inner = next(iter(state.get(block, {}).values()), {})
+    return inner.get(key)
+
+
+def _post_modal_result(client, channel, requester, text, logger=None):
+    """Post the result to the channel the form was opened from, else DM the requester."""
+    if client is None:
+        return
+    for target in (channel, requester):
+        if not target:
+            continue
+        try:
+            client.chat_postMessage(channel=target, text=text)
+            return
+        except Exception as e:
+            (logger or log).warning("modal result to %s failed: %s", target, e)
+
+
+def handle_pr_modal_submission(ack, body, view, client=None, context=None, logger=None):
+    state = view["state"]["values"]
+    repo_full = (_modal_value(state, "repo") or "").strip()
+    base = (_modal_value(state, "base") or "").strip()
+    head = (_modal_value(state, "head") or "").strip()
+    if "/" not in repo_full:
+        ack(response_action="errors", errors={"repo": "Use the form owner/repo"})
+        return
+    ack()  # close the modal
+
+    owner, repo = repo_full.split("/", 1)
+    p = parse_compare(owner, repo, f"{base}...{head}")
+    title = (_modal_value(state, "title") or "").strip()
+    body_text = (_modal_value(state, "body") or "").strip()
+    if title:
+        p["title"] = title
+    if body_text:
+        p["body"] = body_text
+
+    requester = body["user"]["id"]
+    channel = view.get("private_metadata") or ""
+
+    try:
+        status, result = create_pr(p)
+    except requests.RequestException as e:
+        _post_modal_result(client, channel, requester, f":x: GitHub request failed: {e}", logger)
+        return
+
+    _post_modal_result(client, channel, requester, _pr_result_text(status, result), logger)
+
+    if status == "created":
+        bot_id = (context or {}).get("bot_user_id")
+        approvers = [a for a in (_modal_value(state, "approvers", "selected_users") or [])
+                     if a != bot_id]
+        if approvers and client is not None:
+            dm_approvers(client, approvers, result, requester=requester, logger=logger)
+
+
 def build_app(process_before_response=False, token_verification=True):
     """Build a Bolt App wired with the message listener.
 
@@ -340,4 +443,5 @@ def build_app(process_before_response=False, token_verification=True):
     )
     app.event("message")(handle_message)
     app.command("/pr")(handle_pr_command)
+    app.view("pr_modal")(handle_pr_modal_submission)
     return app

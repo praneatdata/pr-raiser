@@ -9,7 +9,7 @@ features:
     - command: /pr
       url: https://pr-raiser.vercel.app/slack/events
       description: Open a PR from base/head without a compare link
-      usage_hint: owner/repo base head
+      usage_hint: owner/repo base head [| title | body]  ·  or blank for a form
       should_escape: true
 oauth_config:
   scopes:
@@ -29,7 +29,8 @@ settings:
       - message.im
       - message.mpim
   interactivity:
-    is_enabled: false
+    is_enabled: true
+    request_url: https://pr-raiser.vercel.app/slack/events
   socket_mode_enabled: false
   org_deploy_enabled: false
   token_rotation_enabled: false
