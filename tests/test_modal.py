@@ -19,6 +19,8 @@ def test_build_pr_modal_structure():
     assert {"repo", "base", "head", "title", "body", "approvers"} <= blocks
     approver = next(b for b in view["blocks"] if b["block_id"] == "approvers")
     assert approver["element"]["type"] == "multi_users_select"  # native picker
+    repo = next(b for b in view["blocks"] if b["block_id"] == "repo")
+    assert repo["element"]["initial_value"] == "vmockinc/"  # owner pre-filled
 
 
 # --- bare /pr opens the modal ---------------------------------------------

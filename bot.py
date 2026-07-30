@@ -331,10 +331,16 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
             dm_approvers(client, approver_ids, result, requester=command.get("user_id"), logger=logger)
 
 
-def _input_block(block_id, label, placeholder=None, multiline=False, optional=False):
+DEFAULT_REPO_OWNER = "vmockinc"  # pre-filled in the /pr form; most PRs are under this org
+
+
+def _input_block(block_id, label, placeholder=None, multiline=False, optional=False,
+                 initial_value=None):
     element = {"type": "plain_text_input", "action_id": "v", "multiline": multiline}
     if placeholder:
         element["placeholder"] = {"type": "plain_text", "text": placeholder}
+    if initial_value:
+        element["initial_value"] = initial_value
     return {"type": "input", "block_id": block_id, "optional": optional,
             "label": {"type": "plain_text", "text": label}, "element": element}
 
@@ -352,7 +358,8 @@ def build_pr_modal(channel_id=""):
         "submit": {"type": "plain_text", "text": "Open PR"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
-            _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui"),
+            _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui",
+                         initial_value=f"{DEFAULT_REPO_OWNER}/"),
             _input_block("base", "Base branch", "main"),
             _input_block("head", "Head branch", "my-feature  or  forkowner:branch"),
             _input_block("title", "Title (optional)", optional=True),
