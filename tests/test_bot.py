@@ -264,6 +264,20 @@ def test_dm_approvers_survives_one_failure():
     assert client.chat_postMessage.call_count == 2
 
 
+def test_dm_approvers_includes_requester():
+    client = MagicMock()
+    bot.dm_approvers(client, ["U1"], PR, requester="UREQ")
+    sent = client.chat_postMessage.call_args.kwargs["text"]
+    assert "<@UREQ>" in sent and "https://gh/pr/3" in sent
+
+
+def test_dm_approvers_without_requester_is_generic():
+    client = MagicMock()
+    bot.dm_approvers(client, ["U1"], PR)
+    sent = client.chat_postMessage.call_args.kwargs["text"]
+    assert "<@" not in sent and "Please review" in sent
+
+
 # --- handle_message inline-mention DM flow ---------------------------------
 
 def test_handle_message_dms_inline_mention(monkeypatch):
@@ -284,6 +298,18 @@ def test_handle_message_dms_inline_mention(monkeypatch):
     client.chat_postMessage.assert_called_once()
     kw = client.chat_postMessage.call_args.kwargs
     assert kw["channel"] == "UPERSON" and "https://gh/pr/5" in kw["text"]
+
+
+def test_handle_message_dm_names_requester(monkeypatch):
+    monkeypatch.setattr(bot, "APPROVERS", {})
+    say, client = _say(), MagicMock()
+    event = {"text": "github.com/acme/widgets/compare/main...feat <@UPERSON>",
+             "ts": "1.2", "user": "UREQ"}
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 5, "title": "t"})):
+        bot.handle_message(event, say, client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    sent = client.chat_postMessage.call_args.kwargs["text"]
+    assert "<@UREQ>" in sent  # requester named in the DM
 
 
 def test_handle_message_no_dm_when_only_bot_mentioned(monkeypatch):

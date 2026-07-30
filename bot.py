@@ -81,10 +81,15 @@ def _strip_mentions(text):
     return re.sub(r"\s{2,}", " ", MENTION_RE.sub("", text or "")).strip()
 
 
-def dm_approvers(client, user_ids, pr, logger=None):
-    """DM each user the PR link, asking them to approve. Best-effort, per user."""
+def dm_approvers(client, user_ids, pr, requester=None, logger=None):
+    """DM each user the PR link, asking them to approve. Best-effort, per user.
+
+    `requester` is the Slack user ID of whoever asked to open the PR; it's shown
+    as an @mention (which renders their name) so the approver knows who's asking.
+    """
     link = f"<{pr['html_url']}|PR #{pr['number']}> — {pr['title']}"
-    text = f":eyes: Please review and approve {link}"
+    who = f"<@{requester}> asked you to" if requester else "Please"
+    text = f":eyes: {who} review and approve {link}"
     for uid in user_ids:
         try:
             client.chat_postMessage(channel=uid, text=text)
@@ -255,7 +260,7 @@ def handle_message(event, say, client=None, context=None, logger=None):
         bot_id = (context or {}).get("bot_user_id")
         approver_ids = mentioned_user_ids(raw, exclude=bot_id)
         if approver_ids and client is not None:
-            dm_approvers(client, approver_ids, result, logger)
+            dm_approvers(client, approver_ids, result, requester=event.get("user"), logger=logger)
 
 
 def parse_pr_command(text):
@@ -311,7 +316,7 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
         bot_id = (context or {}).get("bot_user_id")
         approver_ids = mentioned_user_ids(text, exclude=bot_id)
         if approver_ids and client is not None:
-            dm_approvers(client, approver_ids, result, logger)
+            dm_approvers(client, approver_ids, result, requester=command.get("user_id"), logger=logger)
 
 
 def build_app(process_before_response=False, token_verification=True):
