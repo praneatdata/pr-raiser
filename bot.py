@@ -398,12 +398,20 @@ def handle_build_notification(event, say, logger=None):
 
 def handle_message(event, say, client=None, context=None, logger=None):
     subtype = event.get("subtype")
-    if subtype in ("message_changed", "message_deleted"):
-        return  # ignore edits/deletes
+    if subtype == "message_deleted":
+        return
+    if subtype == "message_changed":
+        # Build bots (AWS CodePipeline) post ONE message and edit it as the
+        # pipeline runs, so the deploy/build outcome arrives as an edit. Process
+        # the updated content (event["message"]) rather than dropping it.
+        inner = event.get("message") or {}
+        if inner.get("bot_id"):
+            handle_build_notification(inner, say, logger)
+        return
 
     if event.get("bot_id") or subtype == "bot_message":
-        # Bot messages (e.g. BuildBot) never open PRs, but a build completion
-        # carrying a commit link tags the PR's requester.
+        # Bot messages (e.g. BuildBot) never open PRs, but a build outcome
+        # tags the PR's requester.
         handle_build_notification(event, say, logger)
         return
     if subtype:

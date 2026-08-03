@@ -160,11 +160,24 @@ def test_bot_message_routes_to_build_notif_not_pr_creation():
     cp.assert_not_called()
 
 
-def test_edit_and_delete_subtypes_ignored():
+def test_edit_of_bot_message_is_processed():
+    # CodePipeline edits one message as it progresses; the deploy outcome arrives
+    # as a message_changed edit and must be processed (not dropped).
+    say = MagicMock()
+    inner = {"bot_id": "B1", "ts": "9.9",
+             "attachments": [{"fields": [{"title": "Commit Id", "value": "abc1234"}]}]}
+    with patch.object(bot, "handle_build_notification") as hbn:
+        bot.handle_message({"subtype": "message_changed", "channel": "C", "message": inner}, say)
+    hbn.assert_called_once()
+    assert hbn.call_args.args[0] is inner  # the updated message is what's processed
+
+
+def test_delete_and_human_edit_ignored():
     say = MagicMock()
     with patch.object(bot, "handle_build_notification") as hbn, \
          patch.object(bot, "create_pr") as cp:
-        bot.handle_message({"subtype": "message_changed", "message": {}}, say)
         bot.handle_message({"subtype": "message_deleted"}, say)
+        # a human message edit (no bot_id inside) is not a build message
+        bot.handle_message({"subtype": "message_changed", "message": {"user": "U1"}}, say)
     hbn.assert_not_called()
     cp.assert_not_called()
