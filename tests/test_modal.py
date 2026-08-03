@@ -34,6 +34,9 @@ def test_repo_block_is_a_dropdown_of_org_repos():
     assert el["type"] == "static_select"
     values = [o["value"] for o in el["options"]]
     assert "vmockinc/dashboard-ui" in values and "vmockinc/resume-ui" in values
+    # labels show the full owner/repo so the base owner is obvious
+    labels = [o["text"]["text"] for o in el["options"]]
+    assert "vmockinc/dashboard-ui" in labels
 
 
 def test_repo_block_falls_back_to_text_when_no_repos():

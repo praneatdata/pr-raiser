@@ -557,7 +557,7 @@ def _repo_block():
     if not repos:
         return _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui",
                             initial_value=f"{DEFAULT_REPO_OWNER}/")
-    options = [{"text": {"type": "plain_text", "text": r[:75]},
+    options = [{"text": {"type": "plain_text", "text": f"{DEFAULT_REPO_OWNER}/{r}"[:75]},
                "value": f"{DEFAULT_REPO_OWNER}/{r}"[:75]} for r in repos[:100]]
     return {"type": "input", "block_id": "repo",
             "label": {"type": "plain_text", "text": "Repo"},
