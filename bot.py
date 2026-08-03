@@ -548,6 +548,24 @@ def _input_block(block_id, label, placeholder=None, multiline=False, optional=Fa
             "label": {"type": "plain_text", "text": label}, "element": element}
 
 
+def _repo_block():
+    """A dropdown of the org's repos, or a text input if the list can't be fetched."""
+    try:
+        repos = sorted(list_org_repos(DEFAULT_REPO_OWNER))
+    except Exception:
+        repos = []
+    if not repos:
+        return _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui",
+                            initial_value=f"{DEFAULT_REPO_OWNER}/")
+    options = [{"text": {"type": "plain_text", "text": r[:75]},
+               "value": f"{DEFAULT_REPO_OWNER}/{r}"[:75]} for r in repos[:100]]
+    return {"type": "input", "block_id": "repo",
+            "label": {"type": "plain_text", "text": "Repo"},
+            "element": {"type": "static_select", "action_id": "v",
+                        "placeholder": {"type": "plain_text", "text": "Select a repo"},
+                        "options": options}}
+
+
 def build_pr_modal(channel_id=""):
     """The guided PR form opened by a bare `/pr`. channel_id is stashed so the
     submission handler knows where to post the result."""
@@ -561,8 +579,7 @@ def build_pr_modal(channel_id=""):
         "submit": {"type": "plain_text", "text": "Open PR"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
-            _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui",
-                         initial_value=f"{DEFAULT_REPO_OWNER}/"),
+            _repo_block(),
             _input_block("base", "Base branch", "main"),
             _input_block("head", "Head branch", "my-feature  or  forkowner:branch"),
             _input_block("title", "Title (optional)", optional=True),
@@ -596,7 +613,9 @@ def _post_modal_result(client, channel, requester, text, logger=None):
 
 def handle_pr_modal_submission(ack, body, view, client=None, context=None, logger=None):
     state = view["state"]["values"]
-    repo_full = (_modal_value(state, "repo") or "").strip()
+    repo_field = next(iter(state.get("repo", {}).values()), {})  # dropdown or text input
+    repo_full = ((repo_field.get("selected_option") or {}).get("value")
+                 or repo_field.get("value") or "").strip()
     base = (_modal_value(state, "base") or "").strip()
     head = (_modal_value(state, "head") or "").strip()
     if "/" not in repo_full:
