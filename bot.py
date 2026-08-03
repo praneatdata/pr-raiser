@@ -66,13 +66,20 @@ COMPARE_RE = re.compile(
 # Slack renders "@user" in message text as <@U012ABC> or <@U012ABC|display-name>.
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
-# A GitHub commit URL (e.g. a build bot's "View Commit" button) -> owner, repo, sha.
+# A GitHub commit URL (if a build bot happens to link one) -> owner, repo, sha.
 COMMIT_URL_RE = re.compile(
     r"github\.com/([^/\s\"<>|]+)/([^/\s\"<>|]+)/commit/([0-9a-fA-F]{7,40})", re.IGNORECASE)
+
+# AWS CodePipeline's "View Commit" button links to the AWS console, not GitHub,
+# so instead read the short SHA from the "Commit Id" attachment field (see
+# _commit_sha_from_event) and resolve the repo from the org repo list via the
+# repo name embedded in the pipeline name.
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 
 # Hidden marker embedded in PR bodies recording who asked pr-raiser to open it.
 REQUESTER_MARKER = "pr-raiser:requester="
 REQUESTER_RE = re.compile(r"pr-raiser:requester=([UW][A-Z0-9]+)")
+NOTIFIED_MARKER = "pr-raiser:notified"  # appended after we tag, to dedupe repeat build msgs
 
 
 def mentioned_user_ids(text, exclude=None):
@@ -190,17 +197,50 @@ def find_pr_for_commit(owner, repo, sha):
     return prs[0] if isinstance(prs, list) and prs else None
 
 
-def pr_requester(owner, repo, pr):
-    """Slack user id recorded in a PR's body marker, or None."""
+_ORG_REPOS = None
+
+
+def list_org_repos(owner):
+    """All repo names under `owner` (cached per warm process). Used to resolve a
+    build message's repo from the repo name embedded in its pipeline name."""
+    global _ORG_REPOS
+    if _ORG_REPOS is None:
+        names, page = [], 1
+        while page <= 10:
+            r = requests.get(
+                f"{GITHUB_API}/orgs/{owner}/repos",
+                headers=gh_headers({"owner": owner, "repo": ""}),
+                params={"per_page": 100, "page": page, "type": "all"}, timeout=30,
+            )
+            if not r.ok or not isinstance(r.json(), list) or not r.json():
+                break
+            names += [x["name"] for x in r.json()]
+            page += 1
+        _ORG_REPOS = names
+    return _ORG_REPOS
+
+
+def fetch_pr_body(owner, repo, pr):
+    """Full PR body (the commit->PR list may omit it, so fetch when missing)."""
     body = pr.get("body")
-    if not body:  # the commit->PR list may omit the body; fetch it directly
+    if body is None:
         r = requests.get(
             f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr['number']}",
             headers=gh_headers({"owner": owner, "repo": repo}), timeout=30,
         )
         body = (r.json().get("body") if r.ok else "") or ""
-    m = REQUESTER_RE.search(body)
-    return m.group(1) if m else None
+    return body or ""
+
+
+def mark_pr_notified(owner, repo, pr, body, slugs):
+    """Append per-status notified markers to the PR body so the same build status
+    for the same PR isn't reported twice."""
+    markers = "".join(f"\n<!-- {NOTIFIED_MARKER}:{s} -->" for s in slugs)
+    requests.patch(
+        f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr['number']}",
+        headers=gh_headers({"owner": owner, "repo": repo}),
+        json={"body": f"{body}{markers}"}, timeout=30,
+    )
 
 
 def create_pr(p):
@@ -249,26 +289,111 @@ def _pr_result_text(status, result):
     return f":x: Couldn't open the PR (HTTP {result.status_code}).\n{detail}"
 
 
+def _rank_repos(blob, repos):
+    """Org repos fuzzily ranked by how well their name matches the build message:
+    the fraction of the repo name's tokens present as words, best first. Ties
+    break toward an exact substring, then more token hits, then a longer name.
+    A repo with zero matching tokens is dropped."""
+    words = set(re.findall(r"[a-z0-9]+", blob))
+    scored = []
+    for r in repos:
+        toks = [t for t in re.split(r"[-_.]", r.lower()) if len(t) >= 2]
+        hits = sum(1 for t in toks if t in words)
+        if toks and hits:
+            scored.append(((hits / len(toks), r.lower() in blob, hits, len(r)), r))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    return [r for _, r in scored]
+
+
+def _commit_sha_from_event(event):
+    """Short SHA from a build message: prefer a structured 'Commit Id' attachment
+    field (Slack serializes it as value-before-title, so a plain regex misses it);
+    fall back to a hex token near the words 'commit id' in either order."""
+    for att in event.get("attachments", []) or []:
+        for f in att.get("fields", []) or []:
+            if "commit" in (f.get("title") or "").lower():
+                mm = _SHA_RE.search(f.get("value") or "")
+                if mm:
+                    return mm.group(0).lower()
+    blob = json.dumps(event).lower()
+    for pat in (r"commit id.{0,60}?([0-9a-f]{7,40})", r"([0-9a-f]{7,40}).{0,60}?commit id"):
+        mm = re.search(pat, blob, re.DOTALL)
+        if mm:
+            return mm.group(1)
+    return None
+
+
+def _build_pr_candidates(event):
+    """(owner, repo, sha) tuples to try for this build message. Prefers a direct
+    github.com commit URL; otherwise uses the 'Commit Id' short SHA and fuzzily
+    resolves the repo from the org repo list via the pipeline name. Each candidate
+    is confirmed against GitHub by the caller, so a wrong guess just won't match."""
+    raw = json.dumps(event)
+    m = COMMIT_URL_RE.search(raw)
+    if m:
+        return [(m.group(1), m.group(2), m.group(3))]
+    sha = _commit_sha_from_event(event)
+    if not sha:
+        return []
+    owner = DEFAULT_REPO_OWNER
+    return [(owner, r, sha) for r in _rank_repos(raw.lower(), list_org_repos(owner))[:12]]
+
+
+ENV_LABELS = {"uat": "UAT", "staging": "Staging", "prod": "Live"}
+# A stage line in a build message: an emoji then a known stage name.
+_STAGE_RE = re.compile(
+    r"(:x:|:white_check_mark:|✅|❌)\s*(build|deployto-[a-z]+(?:-[a-z]+)?)\b", re.IGNORECASE)
+_OK = {":white_check_mark:", "✅"}
+_FAIL = {":x:", "❌"}
+
+
+def _build_statuses(event):
+    """[(headline, slug), ...] for completed stages worth reporting in this build
+    message (a deploy that finished, or a failed build). Empty while in progress."""
+    stages = {stage: emoji for emoji, stage in _STAGE_RE.findall(json.dumps(event).lower())}
+    out = []
+    if stages.get("build") in _FAIL:
+        out.append((":x: Build failed", "build-failed"))
+    for stage, emoji in stages.items():
+        m = re.match(r"deployto-([a-z]+)", stage)
+        if not m:
+            continue
+        env = m.group(1)
+        label = ENV_LABELS.get(env, env.title())
+        if emoji in _OK:
+            out.append((f":white_check_mark: Deployed on {label}", f"deployed-{env}"))
+        elif emoji in _FAIL:
+            out.append((f":x: Deploy to {label} failed", f"deployfail-{env}"))
+    return out
+
+
 def handle_build_notification(event, say, logger=None):
-    """If a bot's build message carries a commit link for a PR we opened, reply
-    in-thread tagging whoever asked for that PR. Best-effort and quiet on misses."""
-    blob = json.dumps(event)
-    m = COMMIT_URL_RE.search(blob)
-    if not m:
-        return
-    if "SUCCEEDED" not in blob.upper():
-        return  # a build message, but not a completion — don't tag yet
-    owner, repo, sha = m.group(1), m.group(2), m.group(3)
+    """If a bot's build message reports a deploy/build outcome for a PR we opened,
+    reply in-thread tagging the requester with that status — once per status."""
+    statuses = _build_statuses(event)
+    if not statuses:
+        return  # nothing terminal to report yet (still building)
     try:
-        pr = find_pr_for_commit(owner, repo, sha)
-        requester = pr_requester(owner, repo, pr) if pr else None
+        for owner, repo, sha in _build_pr_candidates(event):
+            pr = find_pr_for_commit(owner, repo, sha)
+            if not pr:
+                continue
+            body = fetch_pr_body(owner, repo, pr)
+            rm = REQUESTER_RE.search(body)
+            if not rm:
+                log.info("build-notif: PR #%s in %s/%s has no requester marker",
+                         pr["number"], owner, repo)
+                return
+            fresh = [(h, s) for h, s in statuses if f"{NOTIFIED_MARKER}:{s}" not in body]
+            if not fresh:
+                return  # every status here already reported for this PR
+            summary = "  ".join(h for h, _ in fresh)
+            say(text=f"<@{rm.group(1)}> your PR <{pr['html_url']}|#{pr['number']}> — {summary}",
+                thread_ts=event.get("ts"))
+            mark_pr_notified(owner, repo, pr, body, [s for _, s in fresh])
+            return
     except requests.RequestException as e:
-        (logger or log).warning("build-notif lookup failed for %s/%s@%s: %s", owner, repo, sha, e)
-        return
-    if requester:
-        link = f"<{pr['html_url']}|#{pr['number']}>"
-        say(text=f"<@{requester}> :white_check_mark: your PR {link} was merged and built.",
-            thread_ts=event.get("ts"))
+        (logger or log).warning("build-notif failed: %s", e)
 
 
 def handle_message(event, say, client=None, context=None, logger=None):

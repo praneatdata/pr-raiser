@@ -13,13 +13,13 @@ Opening from a fork? Put the fork owner in the head:
 `/pr vmockinc/resume-ui uat yourname:your-branch`
 
 *2.* :new: *Loop in an approver automatically*
-@mention a teammate along with your compare link (or with `/pr`) and I'll DM them the PR asking for their review:
-`github.com/vmockinc/resume-ui/compare/main...my-feature @teammate`
+@mention a teammate along with your compare link (or with `/pr`) and I'll DM them the PR asking for their review. For example:
+github.com/vmockinc/resume-ui/compare/main...my-feature @teammate
 
 *3.* :new: *Set a custom title & body*
 Add them after a `|` (works with both a link and `/pr`; body is optional):
 `/pr vmockinc/resume-ui main my-feature | Fix login redirect | Closes the loop bug on SSO`
 
-_As always, you can still just paste a compare link and I'll open the PR for you._
+:warning: _These features are brand new, so there may still be a few bugs. If `/pr` or an approver DM ever acts up, you can always fall back to just pasting the compare link and I'll open the PR the usual way._
 
 Happy shipping! :tada:
