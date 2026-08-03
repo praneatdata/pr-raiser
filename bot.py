@@ -548,22 +548,29 @@ def _input_block(block_id, label, placeholder=None, multiline=False, optional=Fa
             "label": {"type": "plain_text", "text": label}, "element": element}
 
 
-def _repo_block():
-    """A dropdown of the org's repos, or a text input if the list can't be fetched."""
+def _repo_blocks():
+    """Repo picker: a dropdown of org repos PLUS a free-text field for anything
+    not in the list (e.g. a repo outside the org). Falls back to just the text
+    field if the repo list can't be fetched."""
+    typed = {"type": "input", "block_id": "repo_text", "optional": True,
+             "label": {"type": "plain_text", "text": "…or type another repo (owner/repo)"},
+             "element": {"type": "plain_text_input", "action_id": "v",
+                         "placeholder": {"type": "plain_text", "text": "e.g. someorg/their-repo"}}}
     try:
         repos = sorted(list_org_repos(DEFAULT_REPO_OWNER))
     except Exception:
         repos = []
     if not repos:
-        return _input_block("repo", "Repo (owner/repo)", "vmockinc/resume-ui",
-                            initial_value=f"{DEFAULT_REPO_OWNER}/")
+        return [_input_block("repo_text", "Repo (owner/repo)", "vmockinc/resume-ui",
+                             initial_value=f"{DEFAULT_REPO_OWNER}/")]
     options = [{"text": {"type": "plain_text", "text": f"{DEFAULT_REPO_OWNER}/{r}"[:75]},
                "value": f"{DEFAULT_REPO_OWNER}/{r}"[:75]} for r in repos[:100]]
-    return {"type": "input", "block_id": "repo",
-            "label": {"type": "plain_text", "text": "Repo"},
-            "element": {"type": "static_select", "action_id": "v",
-                        "placeholder": {"type": "plain_text", "text": "Select a repo"},
-                        "options": options}}
+    dropdown = {"type": "input", "block_id": "repo", "optional": True,
+                "label": {"type": "plain_text", "text": "Repo (pick one)"},
+                "element": {"type": "static_select", "action_id": "v",
+                            "placeholder": {"type": "plain_text", "text": "Select a repo"},
+                            "options": options}}
+    return [dropdown, typed]
 
 
 def build_pr_modal(channel_id=""):
@@ -579,7 +586,7 @@ def build_pr_modal(channel_id=""):
         "submit": {"type": "plain_text", "text": "Open PR"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
-            _repo_block(),
+            *_repo_blocks(),
             _input_block("base", "Base branch", "main"),
             _input_block("head", "Head branch", "my-feature  or  forkowner:branch"),
             _input_block("title", "Title (optional)", optional=True),
@@ -613,13 +620,17 @@ def _post_modal_result(client, channel, requester, text, logger=None):
 
 def handle_pr_modal_submission(ack, body, view, client=None, context=None, logger=None):
     state = view["state"]["values"]
-    repo_field = next(iter(state.get("repo", {}).values()), {})  # dropdown or text input
-    repo_full = ((repo_field.get("selected_option") or {}).get("value")
-                 or repo_field.get("value") or "").strip()
+    typed = (_modal_value(state, "repo_text") or "").strip()  # free-text overrides
+    repo_field = next(iter(state.get("repo", {}).values()), {})  # dropdown (may be absent)
+    picked = ((repo_field.get("selected_option") or {}).get("value") or "").strip()
+    repo_full = typed or picked
     base = (_modal_value(state, "base") or "").strip()
     head = (_modal_value(state, "head") or "").strip()
+    if not repo_full:
+        ack(response_action="errors", errors={"repo_text": "Pick a repo above, or type owner/repo"})
+        return
     if "/" not in repo_full:
-        ack(response_action="errors", errors={"repo": "Use the form owner/repo"})
+        ack(response_action="errors", errors={"repo_text": "Use the form owner/repo"})
         return
     ack()  # close the modal
 

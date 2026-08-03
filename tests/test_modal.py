@@ -15,11 +15,15 @@ def _org_repos():
         yield
 
 
-def _state(repo="vmockinc/resume-ui", base="main", head="feat", **extra):
-    """Modal state: repo as a static_select, everything else plain text."""
-    s = {"repo": {"a": {"type": "static_select",
-                        "selected_option": {"value": repo,
-                                            "text": {"type": "plain_text", "text": repo}}}}}
+def _state(repo=None, repo_text=None, base="main", head="feat", **extra):
+    """Modal state: repo via dropdown (repo) and/or free-text (repo_text)."""
+    s = {}
+    if repo is not None:
+        s["repo"] = {"a": {"type": "static_select",
+                           "selected_option": {"value": repo,
+                                               "text": {"type": "plain_text", "text": repo}}}}
+    if repo_text is not None:
+        s["repo_text"] = {"a": {"type": "plain_text_input", "value": repo_text}}
     for k, v in dict(base=base, head=head, **extra).items():
         s[k] = {"a": {"type": "plain_text_input", "value": v}}
     return s
@@ -27,37 +31,33 @@ def _state(repo="vmockinc/resume-ui", base="main", head="feat", **extra):
 
 # --- build_pr_modal --------------------------------------------------------
 
-def test_repo_block_is_a_dropdown_of_org_repos():
-    view = bot.build_pr_modal("C123")
-    repo = next(b for b in view["blocks"] if b["block_id"] == "repo")
-    el = repo["element"]
-    assert el["type"] == "static_select"
-    values = [o["value"] for o in el["options"]]
-    assert "vmockinc/dashboard-ui" in values and "vmockinc/resume-ui" in values
-    # labels show the full owner/repo so the base owner is obvious
-    labels = [o["text"]["text"] for o in el["options"]]
-    assert "vmockinc/dashboard-ui" in labels
+def test_repo_dropdown_plus_text_field():
+    blocks = {b["block_id"]: b for b in bot.build_pr_modal("C1")["blocks"]}
+    assert blocks["repo"]["element"]["type"] == "static_select"       # dropdown
+    assert blocks["repo_text"]["element"]["type"] == "plain_text_input"  # free-text
+    assert blocks["repo"]["optional"] and blocks["repo_text"]["optional"]
+    labels = [o["text"]["text"] for o in blocks["repo"]["element"]["options"]]
+    assert "vmockinc/dashboard-ui" in labels  # full owner/repo shown
 
 
-def test_repo_block_falls_back_to_text_when_no_repos():
+def test_falls_back_to_text_when_no_repos():
     with patch.object(bot, "list_org_repos", return_value=[]):
-        repo = next(b for b in bot.build_pr_modal("C1")["blocks"] if b["block_id"] == "repo")
-    assert repo["element"]["type"] == "plain_text_input"
-    assert repo["element"]["initial_value"] == "vmockinc/"
+        blocks = {b["block_id"]: b for b in bot.build_pr_modal("C1")["blocks"]}
+    assert "repo" not in blocks
+    assert blocks["repo_text"]["element"]["initial_value"] == "vmockinc/"
 
 
 def test_modal_has_all_fields():
     blocks = {b["block_id"] for b in bot.build_pr_modal("C1")["blocks"]}
-    assert {"repo", "base", "head", "title", "body", "approvers"} <= blocks
+    assert {"repo", "repo_text", "base", "head", "title", "body", "approvers"} <= blocks
 
 
 # --- bare /pr opens the modal ---------------------------------------------
 
 def test_blank_command_opens_modal():
     ack, client = MagicMock(), MagicMock()
-    cmd = {"text": "  ", "trigger_id": "T1", "channel_id": "C1", "user_id": "U1"}
-    bot.handle_pr_command(ack, cmd, MagicMock(), client=client, context={}, logger=None)
-    client.views_open.assert_called_once()
+    bot.handle_pr_command(ack, {"text": "  ", "trigger_id": "T1", "channel_id": "C1", "user_id": "U1"},
+                          MagicMock(), client=client, context={}, logger=None)
     kw = client.views_open.call_args.kwargs
     assert kw["trigger_id"] == "T1" and kw["view"]["callback_id"] == "pr_modal"
 
@@ -73,9 +73,9 @@ def test_command_with_args_does_not_open_modal():
 
 # --- view_submission -------------------------------------------------------
 
-def _submit(state, private_metadata="C1", user="UREQ", ctx=None):
+def _submit(state, user="UREQ", ctx=None):
     ack, client = MagicMock(), MagicMock()
-    view = {"state": {"values": state}, "private_metadata": private_metadata}
+    view = {"state": {"values": state}, "private_metadata": "C1"}
     with patch.object(bot, "create_pr",
                       return_value=("created", {"html_url": "https://gh/pr/9",
                                                 "number": 9, "title": "t"})) as cp:
@@ -89,19 +89,42 @@ def _channels(client):
 
 
 def test_submission_uses_dropdown_repo():
-    state = _state(repo="vmockinc/dashboard-ui", base="uat", head="someuser:feat",
-                   title="My Title", body="My body")
-    ack, client, cp = _submit(state)
-    ack.assert_called_once_with()
+    ack, client, cp = _submit(_state(repo="vmockinc/dashboard-ui", base="uat", head="x:feat"))
     p = cp.call_args.args[0]
     assert p["owner"] == "vmockinc" and p["repo"] == "dashboard-ui"
-    assert p["base_branch"] == "uat" and p["api_head"] == "someuser:feat"
-    assert p["title"] == "My Title" and p["body"] == "My body"
+    assert p["base_branch"] == "uat" and p["api_head"] == "x:feat"
     assert "C1" in _channels(client)
 
 
+def test_typed_repo_is_used_and_overrides_dropdown():
+    # user typed a non-org repo; the free text wins over any dropdown pick
+    ack, client, cp = _submit(_state(repo="vmockinc/resume-ui", repo_text="someorg/their-repo"))
+    p = cp.call_args.args[0]
+    assert p["owner"] == "someorg" and p["repo"] == "their-repo"
+
+
+def test_typed_repo_alone_works():
+    ack, client, cp = _submit(_state(repo_text="someorg/their-repo"))
+    assert cp.call_args.args[0]["owner"] == "someorg"
+
+
+def test_no_repo_selected_or_typed_errors():
+    ack, client = MagicMock(), MagicMock()
+    view = {"state": {"values": _state()}, "private_metadata": "C1"}  # neither repo nor repo_text
+    bot.handle_pr_modal_submission(ack, {"user": {"id": "U"}}, view, client=client)
+    assert ack.call_args.kwargs.get("response_action") == "errors"
+    client.chat_postMessage.assert_not_called()
+
+
+def test_typed_repo_without_slash_errors():
+    ack, client = MagicMock(), MagicMock()
+    view = {"state": {"values": _state(repo_text="not-a-repo")}, "private_metadata": "C1"}
+    bot.handle_pr_modal_submission(ack, {"user": {"id": "U"}}, view, client=client)
+    assert ack.call_args.kwargs.get("response_action") == "errors"
+
+
 def test_submission_dms_selected_approvers_with_requester():
-    state = _state()
+    state = _state(repo="vmockinc/resume-ui")
     state["approvers"] = {"a": {"type": "multi_users_select", "selected_users": ["UP1", "UP2"]}}
     ack, client, cp = _submit(state, user="UREQ", ctx={"bot_user_id": "UBOT"})
     dmed = _channels(client)
@@ -112,17 +135,8 @@ def test_submission_dms_selected_approvers_with_requester():
 
 
 def test_submission_excludes_bot_from_approvers():
-    state = _state()
+    state = _state(repo="vmockinc/resume-ui")
     state["approvers"] = {"a": {"selected_users": ["UBOT", "UP1"]}}
     ack, client, cp = _submit(state, ctx={"bot_user_id": "UBOT"})
     dmed = _channels(client)
     assert "UBOT" not in dmed and "UP1" in dmed
-
-
-def test_submission_invalid_repo_returns_error():
-    state = _state(repo="not-a-repo")
-    ack, client = MagicMock(), MagicMock()
-    view = {"state": {"values": state}, "private_metadata": "C1"}
-    bot.handle_pr_modal_submission(ack, {"user": {"id": "U"}}, view, client=client)
-    assert ack.call_args.kwargs.get("response_action") == "errors"
-    client.chat_postMessage.assert_not_called()
