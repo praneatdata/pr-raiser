@@ -5,6 +5,7 @@ Entry points:
   app.py       — Socket Mode (local dev / Docker), no public URL needed.
   api/index.py — HTTP Events API (Vercel serverless).
 """
+import json
 import os
 import re
 import ssl
@@ -64,6 +65,14 @@ COMPARE_RE = re.compile(
 
 # Slack renders "@user" in message text as <@U012ABC> or <@U012ABC|display-name>.
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+# A GitHub commit URL (e.g. a build bot's "View Commit" button) -> owner, repo, sha.
+COMMIT_URL_RE = re.compile(
+    r"github\.com/([^/\s\"<>|]+)/([^/\s\"<>|]+)/commit/([0-9a-fA-F]{7,40})", re.IGNORECASE)
+
+# Hidden marker embedded in PR bodies recording who asked pr-raiser to open it.
+REQUESTER_MARKER = "pr-raiser:requester="
+REQUESTER_RE = re.compile(r"pr-raiser:requester=([UW][A-Z0-9]+)")
 
 
 def mentioned_user_ids(text, exclude=None):
@@ -171,12 +180,40 @@ def find_open_pr(p):
     return r.json()[0] if r.ok and r.json() else None
 
 
+def find_pr_for_commit(owner, repo, sha):
+    """The PR a commit belongs to (e.g. the merge commit's PR), or None."""
+    r = requests.get(
+        f"{GITHUB_API}/repos/{owner}/{repo}/commits/{sha}/pulls",
+        headers=gh_headers({"owner": owner, "repo": repo}), timeout=30,
+    )
+    prs = r.json() if r.ok else []
+    return prs[0] if isinstance(prs, list) and prs else None
+
+
+def pr_requester(owner, repo, pr):
+    """Slack user id recorded in a PR's body marker, or None."""
+    body = pr.get("body")
+    if not body:  # the commit->PR list may omit the body; fetch it directly
+        r = requests.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr['number']}",
+            headers=gh_headers({"owner": owner, "repo": repo}), timeout=30,
+        )
+        body = (r.json().get("body") if r.ok else "") or ""
+    m = REQUESTER_RE.search(body)
+    return m.group(1) if m else None
+
+
 def create_pr(p):
+    body = p.get("body") or "Opened automatically from a compare link shared in Slack."
+    if p.get("requester"):
+        # Hidden marker (invisible in GitHub's rendered view) so a later build
+        # notification can tag whoever asked for this PR.
+        body += f"\n\n<!-- {REQUESTER_MARKER}{p['requester']} -->"
     payload = {
         "title": p.get("title") or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
         "head": p["api_head"],
         "base": p["base_branch"],
-        "body": p.get("body") or "Opened automatically from a compare link shared in Slack.",
+        "body": body,
         # Must be an explicit False: for cross-fork PRs GitHub defaults this
         # to true, and only the fork's owner may grant it — omitting the key
         # still 422s with fork_collab when the token user isn't the fork owner
@@ -212,9 +249,40 @@ def _pr_result_text(status, result):
     return f":x: Couldn't open the PR (HTTP {result.status_code}).\n{detail}"
 
 
+def handle_build_notification(event, say, logger=None):
+    """If a bot's build message carries a commit link for a PR we opened, reply
+    in-thread tagging whoever asked for that PR. Best-effort and quiet on misses."""
+    blob = json.dumps(event)
+    m = COMMIT_URL_RE.search(blob)
+    if not m:
+        return
+    if "SUCCEEDED" not in blob.upper():
+        return  # a build message, but not a completion — don't tag yet
+    owner, repo, sha = m.group(1), m.group(2), m.group(3)
+    try:
+        pr = find_pr_for_commit(owner, repo, sha)
+        requester = pr_requester(owner, repo, pr) if pr else None
+    except requests.RequestException as e:
+        (logger or log).warning("build-notif lookup failed for %s/%s@%s: %s", owner, repo, sha, e)
+        return
+    if requester:
+        link = f"<{pr['html_url']}|#{pr['number']}>"
+        say(text=f"<@{requester}> :white_check_mark: your PR {link} was merged and built.",
+            thread_ts=event.get("ts"))
+
+
 def handle_message(event, say, client=None, context=None, logger=None):
-    if event.get("bot_id") or event.get("subtype"):
-        return  # ignore bots (incl. ourselves) and edits / joins / etc.
+    subtype = event.get("subtype")
+    if subtype in ("message_changed", "message_deleted"):
+        return  # ignore edits/deletes
+
+    if event.get("bot_id") or subtype == "bot_message":
+        # Bot messages (e.g. BuildBot) never open PRs, but a build completion
+        # carrying a commit link tags the PR's requester.
+        handle_build_notification(event, say, logger)
+        return
+    if subtype:
+        return  # joins / other system subtypes
 
     raw = event.get("text", "") or ""
     cmd_part, title, body = split_command_title_body(raw)
@@ -237,6 +305,7 @@ def handle_message(event, say, client=None, context=None, logger=None):
         p["title"] = _strip_mentions(title)
     if body:
         p["body"] = _strip_mentions(body)
+    p["requester"] = event.get("user")
 
     log.info("Compare link from %s: %s/%s  %s -> %s",
              event.get("user"), p["owner"], p["repo"], p["api_head"], p["base_branch"])
@@ -312,6 +381,7 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
         p["title"] = _strip_mentions(title)
     if body:
         p["body"] = _strip_mentions(body)
+    p["requester"] = command.get("user_id")
 
     try:
         status, result = create_pr(p)
@@ -412,6 +482,7 @@ def handle_pr_modal_submission(ack, body, view, client=None, context=None, logge
 
     requester = body["user"]["id"]
     channel = view.get("private_metadata") or ""
+    p["requester"] = requester
 
     try:
         status, result = create_pr(p)

@@ -372,6 +372,16 @@ def test_create_pr_defaults_when_absent():
         bot.create_pr(dict(P))
     j = post.call_args.kwargs["json"]
     assert j["title"] == "acme:feat → main" and "automatically" in j["body"]
+    assert "pr-raiser:requester" not in j["body"]  # no marker without a requester
+
+
+def test_create_pr_embeds_requester_marker():
+    resp = FakeResp(201, {"html_url": "u", "number": 1, "title": "t"})
+    with patch.object(bot.requests, "post", return_value=resp) as post:
+        bot.create_pr(dict(P, requester="UREQ", body="My body"))
+    marker_body = post.call_args.kwargs["json"]["body"]
+    assert marker_body.startswith("My body")
+    assert "<!-- pr-raiser:requester=UREQ -->" in marker_body
 
 
 def test_handle_message_custom_title_body(monkeypatch):
