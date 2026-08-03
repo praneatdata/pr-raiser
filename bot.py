@@ -548,29 +548,38 @@ def _input_block(block_id, label, placeholder=None, multiline=False, optional=Fa
             "label": {"type": "plain_text", "text": label}, "element": element}
 
 
-def _repo_blocks():
-    """Repo picker: a dropdown of org repos PLUS a free-text field for anything
-    not in the list (e.g. a repo outside the org). Falls back to just the text
-    field if the repo list can't be fetched."""
-    typed = {"type": "input", "block_id": "repo_text", "optional": True,
-             "label": {"type": "plain_text", "text": "…or type another repo (owner/repo)"},
-             "element": {"type": "plain_text_input", "action_id": "v",
-                         "placeholder": {"type": "plain_text", "text": "e.g. someorg/their-repo"}}}
+REPO_SELECT_ACTION = "repo_select"
+
+
+def _repo_block():
+    """One field: an external_select that type-ahead-searches org repos AND accepts
+    any 'owner/repo' the user types (the options handler offers it verbatim), so
+    repos outside the org still work."""
+    return {"type": "input", "block_id": "repo",
+            "label": {"type": "plain_text", "text": "Repo"},
+            "element": {"type": "external_select", "action_id": REPO_SELECT_ACTION,
+                        "min_query_length": 0,
+                        "placeholder": {"type": "plain_text",
+                                        "text": "Pick a repo, or type owner/repo"}}}
+
+
+def handle_repo_options(ack, payload):
+    """Options for the repo external_select: matching org repos, plus — if the user
+    typed a full owner/repo — that value verbatim so non-org repos are selectable."""
+    query = (payload.get("value") or "").strip()
+    q = query.lower()
     try:
         repos = sorted(list_org_repos(DEFAULT_REPO_OWNER))
     except Exception:
         repos = []
-    if not repos:
-        return [_input_block("repo_text", "Repo (owner/repo)", "vmockinc/resume-ui",
-                             initial_value=f"{DEFAULT_REPO_OWNER}/")]
-    options = [{"text": {"type": "plain_text", "text": f"{DEFAULT_REPO_OWNER}/{r}"[:75]},
-               "value": f"{DEFAULT_REPO_OWNER}/{r}"[:75]} for r in repos[:100]]
-    dropdown = {"type": "input", "block_id": "repo", "optional": True,
-                "label": {"type": "plain_text", "text": "Repo (pick one)"},
-                "element": {"type": "static_select", "action_id": "v",
-                            "placeholder": {"type": "plain_text", "text": "Select a repo"},
-                            "options": options}}
-    return [dropdown, typed]
+    opts = [{"text": {"type": "plain_text", "text": f"{DEFAULT_REPO_OWNER}/{r}"[:75]},
+             "value": f"{DEFAULT_REPO_OWNER}/{r}"[:75]}
+            for r in repos if q in r.lower()][:50]
+    if "/" in query:
+        verbatim = {"text": {"type": "plain_text", "text": query[:75]}, "value": query[:75]}
+        if verbatim not in opts:
+            opts.insert(0, verbatim)
+    ack(options=opts[:100])
 
 
 def build_pr_modal(channel_id=""):
@@ -586,7 +595,7 @@ def build_pr_modal(channel_id=""):
         "submit": {"type": "plain_text", "text": "Open PR"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
-            *_repo_blocks(),
+            _repo_block(),
             _input_block("base", "Base branch", "main"),
             _input_block("head", "Head branch", "my-feature  or  forkowner:branch"),
             _input_block("title", "Title (optional)", optional=True),
@@ -620,17 +629,12 @@ def _post_modal_result(client, channel, requester, text, logger=None):
 
 def handle_pr_modal_submission(ack, body, view, client=None, context=None, logger=None):
     state = view["state"]["values"]
-    typed = (_modal_value(state, "repo_text") or "").strip()  # free-text overrides
-    repo_field = next(iter(state.get("repo", {}).values()), {})  # dropdown (may be absent)
-    picked = ((repo_field.get("selected_option") or {}).get("value") or "").strip()
-    repo_full = typed or picked
+    repo_field = next(iter(state.get("repo", {}).values()), {})
+    repo_full = ((repo_field.get("selected_option") or {}).get("value") or "").strip()
     base = (_modal_value(state, "base") or "").strip()
     head = (_modal_value(state, "head") or "").strip()
-    if not repo_full:
-        ack(response_action="errors", errors={"repo_text": "Pick a repo above, or type owner/repo"})
-        return
     if "/" not in repo_full:
-        ack(response_action="errors", errors={"repo_text": "Use the form owner/repo"})
+        ack(response_action="errors", errors={"repo": "Pick a repo, or type owner/repo"})
         return
     ack()  # close the modal
 
@@ -685,4 +689,5 @@ def build_app(process_before_response=False, token_verification=True):
     app.event("message")(handle_message)
     app.command("/pr")(handle_pr_command)
     app.view("pr_modal")(handle_pr_modal_submission)
+    app.options(REPO_SELECT_ACTION)(handle_repo_options)
     return app
