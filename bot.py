@@ -355,10 +355,13 @@ def _build_statuses(event):
     if stages.get("build") in _FAIL:
         out.append((":x: Build failed", "build-failed"))
     for stage, emoji in stages.items():
-        m = re.match(r"deployto-([a-z]+)", stage)
+        m = re.match(r"deployto-([a-z]+)(?:-([a-z]+))?$", stage)
         if not m:
             continue
-        env = m.group(1)
+        env, region = m.group(1), m.group(2)
+        # Production is region-split (prod-us / prod-uk); only the US deploy is "Live".
+        if env == "prod" and region != "us":
+            continue
         label = ENV_LABELS.get(env, env.title())
         if emoji in _OK:
             out.append((f":white_check_mark: Deployed on {label}", f"deployed-{env}"))

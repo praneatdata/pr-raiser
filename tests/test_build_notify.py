@@ -39,6 +39,18 @@ def test_status_deployed_prod_is_live():
     assert bot._build_statuses(ev) == [(":white_check_mark: Deployed on Live", "deployed-prod")]
 
 
+def test_status_prod_uk_is_not_live():
+    # The UK production deploy must NOT be tagged "Live" — only prod-us is.
+    ev = _event(stages=":white_check_mark: Build\t:white_check_mark: DeployTo-prod-uk")
+    assert bot._build_statuses(ev) == []
+
+
+def test_status_prod_us_wins_over_uk():
+    # When both regions succeed in one message, only the US deploy is announced.
+    ev = _event(stages=":white_check_mark: DeployTo-prod-uk\t:white_check_mark: DeployTo-prod-us")
+    assert bot._build_statuses(ev) == [(":white_check_mark: Deployed on Live", "deployed-prod")]
+
+
 def test_status_build_failed():
     ev = _event(stages=":x: Build")
     assert bot._build_statuses(ev) == [(":x: Build failed", "build-failed")]
