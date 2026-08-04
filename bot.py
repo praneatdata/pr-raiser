@@ -379,8 +379,8 @@ def handle_build_notification(event, say, logger=None):
             if not pr:
                 continue
             body = fetch_pr_body(owner, repo, pr)
-            rm = REQUESTER_RE.search(body)
-            if not rm:
+            requesters = list(dict.fromkeys(REQUESTER_RE.findall(body)))  # pr-raiser + /track
+            if not requesters:
                 log.info("build-notif: PR #%s in %s/%s has no requester marker",
                          pr["number"], owner, repo)
                 return
@@ -388,7 +388,8 @@ def handle_build_notification(event, say, logger=None):
             if not fresh:
                 return  # every status here already reported for this PR
             summary = "  ".join(h for h, _ in fresh)
-            say(text=f"<@{rm.group(1)}> your PR <{pr['html_url']}|#{pr['number']}> — {summary}",
+            mentions = " ".join(f"<@{u}>" for u in requesters)
+            say(text=f"{mentions} your PR <{pr['html_url']}|#{pr['number']}> — {summary}",
                 thread_ts=event.get("ts"))
             mark_pr_notified(owner, repo, pr, body, [s for _, s in fresh])
             return
@@ -667,6 +668,53 @@ def handle_pr_modal_submission(ack, body, view, client=None, context=None, logge
             dm_approvers(client, approvers, result, requester=requester, logger=logger)
 
 
+# A pull request reference: a github.com/.../pull/N link, or owner/repo#N / owner/repo N.
+PR_URL_RE = re.compile(r"github\.com/([^/\s<>|]+)/([^/\s<>|]+)/pull/(\d+)", re.IGNORECASE)
+PR_REF_RE = re.compile(r"([\w.-]+)/([\w.-]+)[#\s]+(\d+)")
+
+
+def handle_track_command(ack, command, respond, context=None, logger=None):
+    """`/track <PR> [@people]` — stamp requester markers onto a PR so the caller
+    (and anyone @mentioned) get the same #code-builds build/deploy tags, even for
+    PRs not opened through me."""
+    ack()
+    text = command.get("text", "") or ""
+    m = PR_URL_RE.search(text) or PR_REF_RE.search(text)
+    if not m:
+        respond(":warning: Usage: `/track <pull-request link> [@teammates]`  "
+                "(or `/track owner/repo 123`)")
+        return
+    owner, repo, number = m.group(1), m.group(2), m.group(3)
+    bot_id = (context or {}).get("bot_user_id")
+    watchers = [w for w in dict.fromkeys(
+        [command.get("user_id")] + mentioned_user_ids(text, exclude=bot_id)) if w]
+    p = {"owner": owner, "repo": repo}
+    try:
+        r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+                         headers=gh_headers(p), timeout=30)
+        if not r.ok:
+            respond(f":x: Couldn't find PR #{number} in {owner}/{repo} (HTTP {r.status_code}).")
+            return
+        pr = r.json()
+        body = pr.get("body") or ""
+        new = [w for w in watchers if f"{REQUESTER_MARKER}{w}" not in body]
+        if not new:
+            respond(f":information_source: Already tracking <{pr['html_url']}|#{number}>.")
+            return
+        markers = "".join(f"\n<!-- {REQUESTER_MARKER}{w} -->" for w in new)
+        pr_r = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+                              headers=gh_headers(p), json={"body": body + markers}, timeout=30)
+        if not pr_r.ok:
+            respond(f":x: Couldn't update PR #{number} (HTTP {pr_r.status_code}) — "
+                    "I may not have write access to that repo.")
+            return
+        who = " ".join(f"<@{w}>" for w in new)
+        respond(f":eyes: Tracking <{pr['html_url']}|#{number}> for {who} — "
+                "I'll tag them in #code-builds as it builds and deploys.")
+    except requests.RequestException as e:
+        respond(f":x: GitHub request failed: {e}")
+
+
 def build_app(process_before_response=False, token_verification=True):
     """Build a Bolt App wired with the message listener.
 
@@ -688,6 +736,7 @@ def build_app(process_before_response=False, token_verification=True):
     )
     app.event("message")(handle_message)
     app.command("/pr")(handle_pr_command)
+    app.command("/track")(handle_track_command)
     app.view("pr_modal")(handle_pr_modal_submission)
     app.options(REPO_SELECT_ACTION)(handle_repo_options)
     return app
