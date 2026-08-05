@@ -9,12 +9,12 @@ features:
     - command: /pr
       url: https://pr-raiser.vercel.app/slack/events
       description: Open a PR from base/head without a compare link
-      usage_hint: owner/repo base head [| title | body]  ·  or blank for a form
+      usage_hint: owner/repo base head [| title | body | deploy message]  ·  or blank for a form
       should_escape: true
     - command: /track
       url: https://pr-raiser.vercel.app/slack/events
       description: Get tagged in #code-builds as a PR builds & deploys
-      usage_hint: <pull-request link> [@teammates]
+      usage_hint: <pull-request link> [@teammates] [| message]
       should_escape: true
 oauth_config:
   scopes:

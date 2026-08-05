@@ -29,7 +29,7 @@ def test_repo_is_single_external_select():
 
 def test_modal_has_all_fields():
     blocks = {b["block_id"] for b in bot.build_pr_modal("C1")["blocks"]}
-    assert {"repo", "base", "head", "title", "body", "approvers"} <= blocks
+    assert {"repo", "base", "head", "title", "body", "approvers", "deploy_note"} <= blocks
 
 
 # --- repo options handler --------------------------------------------------
@@ -132,3 +132,21 @@ def test_submission_excludes_bot_from_approvers():
     ack, client, cp = _submit(state, ctx={"bot_user_id": "UBOT"})
     dmed = _channels(client)
     assert "UBOT" not in dmed and "UP1" in dmed
+
+
+def test_submission_deploy_note_tags_approvers():
+    # A deploy message loops the approvers in as deploy-watchers carrying that note.
+    state = _state(repo="vmockinc/resume-ui")
+    state["approvers"] = {"a": {"selected_users": ["UP1", "UP2"]}}
+    state["deploy_note"] = {"a": {"type": "plain_text_input", "value": "verify SSO once live"}}
+    ack, client, cp = _submit(state, ctx={"bot_user_id": "UBOT"})
+    p = cp.call_args.args[0]
+    assert p["deploy_note"] == "verify SSO once live"
+    assert p["deploy_watchers"] == ["UP1", "UP2"]
+
+
+def test_submission_without_deploy_note_sets_no_watchers():
+    state = _state(repo="vmockinc/resume-ui")
+    state["approvers"] = {"a": {"selected_users": ["UP1"]}}
+    ack, client, cp = _submit(state, ctx={"bot_user_id": "UBOT"})
+    assert "deploy_note" not in cp.call_args.args[0]

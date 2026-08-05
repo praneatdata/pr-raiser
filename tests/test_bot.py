@@ -95,6 +95,31 @@ def test_create_pr_created(monkeypatch):
     assert post.call_args.kwargs["json"]["maintainer_can_modify"] is False
 
 
+def test_create_pr_embeds_requester_and_noted_watchers(monkeypatch):
+    import base64
+    p = dict(P, requester="UREQ", deploy_watchers=["UP1", "UREQ"],
+             deploy_note="verify SSO once live")
+    resp = FakeResp(201, {"html_url": "u", "number": 1, "title": "t"})
+    with patch.object(bot.requests, "post", return_value=resp) as post:
+        bot.create_pr(p)
+    body = post.call_args.kwargs["json"]["body"]
+    enc = base64.b64encode("verify SSO once live".encode()).decode()
+    assert "<!-- pr-raiser:requester=UREQ -->" in body          # raiser: plain (deduped out of watchers)
+    assert f"pr-raiser:requester=UP1|{enc}" in body             # teammate: noted
+    assert bot.watcher_notes(body) == {"UREQ": "", "UP1": "verify SSO once live"}
+
+
+def test_create_pr_note_without_watchers_rides_on_requester(monkeypatch):
+    import base64
+    p = dict(P, requester="UREQ", deploy_note="ping me on live")
+    resp = FakeResp(201, {"html_url": "u", "number": 1, "title": "t"})
+    with patch.object(bot.requests, "post", return_value=resp) as post:
+        bot.create_pr(p)
+    body = post.call_args.kwargs["json"]["body"]
+    enc = base64.b64encode("ping me on live".encode()).decode()
+    assert f"pr-raiser:requester=UREQ|{enc}" in body
+
+
 def test_create_pr_exists(monkeypatch):
     with patch.object(bot.requests, "post", return_value=FakeResp(422)), \
          patch.object(bot, "find_open_pr", return_value={"html_url": "u", "number": 9}):

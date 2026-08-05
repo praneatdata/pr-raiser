@@ -147,6 +147,20 @@ def test_command_approver_after_body_pipes_is_dmed_and_stripped():
     assert client.chat_postMessage.call_args.kwargs["channel"] == "USAKSHAN"
 
 
+def test_command_deploy_note_loops_approver_in():
+    # 4th pipe segment is a deploy message; the @mentioned teammate becomes a
+    # deploy-watcher carrying it (and still gets the approval DM).
+    ack, respond, client = MagicMock(), MagicMock(), MagicMock()
+    text = "acme/widgets main feat <@UP> | Title | Body | verify once live"
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_pr_command(ack, _cmd(text), respond,
+                              client=client, context={"bot_user_id": "UBOT"}, logger=None)
+    p = cp.call_args.args[0]
+    assert p["deploy_note"] == "verify once live" and p["deploy_watchers"] == ["UP"]
+    assert client.chat_postMessage.call_args.kwargs["channel"] == "UP"
+
+
 def test_command_error_reports_detail():
     ack, respond = MagicMock(), MagicMock()
     err = FakeResp(422, {"message": "Validation Failed",

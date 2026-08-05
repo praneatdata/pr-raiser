@@ -1,7 +1,12 @@
 """Tests for the /track command (track a PR you opened yourself)."""
+import base64
 from unittest.mock import MagicMock, patch
 
 import bot
+
+
+def _b64(s):
+    return base64.b64encode(s.encode()).decode()
 
 
 class FakeResp:
@@ -51,6 +56,40 @@ def test_track_adds_mentioned_watchers():
     body = pr_patch.call_args.kwargs["json"]["body"]
     for u in ("UREQ", "UALICE", "UBOB"):
         assert f"pr-raiser:requester={u}" in body
+
+
+def test_track_attaches_message_to_teammate():
+    # `/track <PR> @alice | note` -> alice gets a noted marker, caller a plain one.
+    ack, respond = MagicMock(), MagicMock()
+    with patch.object(bot.requests, "get", return_value=FakeResp(json_data=PR)), \
+         patch.object(bot.requests, "patch", return_value=FakeResp()) as pr_patch:
+        bot.handle_track_command(
+            ack, _cmd("vmockinc/dashboard-ui#42 <@UALICE> | please verify SSO"),
+            respond, context={"bot_user_id": "UBOT"})
+    body = pr_patch.call_args.kwargs["json"]["body"]
+    assert f"pr-raiser:requester=UALICE|{_b64('please verify SSO')}" in body
+    assert "<!-- pr-raiser:requester=UREQ -->" in body  # caller: plain, no note
+    assert "with your message" in respond.call_args.args[0]
+
+
+def test_track_self_note_when_no_mention():
+    ack, respond = MagicMock(), MagicMock()
+    with patch.object(bot.requests, "get", return_value=FakeResp(json_data=PR)), \
+         patch.object(bot.requests, "patch", return_value=FakeResp()) as pr_patch:
+        bot.handle_track_command(ack, _cmd("vmockinc/dashboard-ui#42 | ping me on live"), respond)
+    body = pr_patch.call_args.kwargs["json"]["body"]
+    assert f"pr-raiser:requester=UREQ|{_b64('ping me on live')}" in body
+
+
+def test_track_upgrades_plain_watcher_with_a_note():
+    # An already-tracked plain watcher can be given a note by re-running with `| msg`.
+    ack, respond = MagicMock(), MagicMock()
+    existing = {"number": 42, "html_url": "u", "body": "x\n<!-- pr-raiser:requester=UREQ -->"}
+    with patch.object(bot.requests, "get", return_value=FakeResp(json_data=existing)), \
+         patch.object(bot.requests, "patch", return_value=FakeResp()) as pr_patch:
+        bot.handle_track_command(ack, _cmd("vmockinc/dashboard-ui#42 | verify once live"), respond)
+    body = pr_patch.call_args.kwargs["json"]["body"]
+    assert f"pr-raiser:requester=UREQ|{_b64('verify once live')}" in body
 
 
 def test_track_already_tracking_is_noop():

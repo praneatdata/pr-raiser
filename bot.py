@@ -5,6 +5,7 @@ Entry points:
   app.py       — Socket Mode (local dev / Docker), no public URL needed.
   api/index.py — HTTP Events API (Vercel serverless).
 """
+import base64
 import json
 import os
 import re
@@ -76,10 +77,37 @@ COMMIT_URL_RE = re.compile(
 # repo name embedded in the pipeline name.
 _SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 
-# Hidden marker embedded in PR bodies recording who asked pr-raiser to open it.
+# Hidden marker embedded in PR bodies recording who to tag on a build/deploy
+# status, plus an optional custom note to show that person. The note is base64ed
+# so arbitrary text (newlines, pipes, "-->") can't break the HTML comment.
 REQUESTER_MARKER = "pr-raiser:requester="
-REQUESTER_RE = re.compile(r"pr-raiser:requester=([UW][A-Z0-9]+)")
+REQUESTER_RE = re.compile(r"pr-raiser:requester=([UW][A-Z0-9]+)(?:\|([A-Za-z0-9+/=]+))?")
 NOTIFIED_MARKER = "pr-raiser:notified"  # appended after we tag, to dedupe repeat build msgs
+
+
+def _requester_marker(uid, note=None):
+    """A hidden watcher marker for `uid`, optionally carrying a base64 note."""
+    if note:
+        enc = base64.b64encode(note.encode("utf-8")).decode("ascii")
+        return f"<!-- {REQUESTER_MARKER}{uid}|{enc} -->"
+    return f"<!-- {REQUESTER_MARKER}{uid} -->"
+
+
+def watcher_notes(body):
+    """Ordered {uid: note} for every watcher marker in `body` (note is "" when the
+    marker carries none). A marker with a note wins over a plain one for the same
+    user, so a later `/track ... | message` upgrades an existing plain watcher."""
+    out = {}
+    for uid, enc in REQUESTER_RE.findall(body or ""):
+        note = ""
+        if enc:
+            try:
+                note = base64.b64decode(enc).decode("utf-8")
+            except Exception:
+                note = ""
+        if uid not in out or (note and not out[uid]):
+            out[uid] = note
+    return out
 
 
 def mentioned_user_ids(text, exclude=None):
@@ -245,10 +273,20 @@ def mark_pr_notified(owner, repo, pr, body, slugs):
 
 def create_pr(p):
     body = p.get("body") or "Opened automatically from a compare link shared in Slack."
+    # Hidden markers (invisible in GitHub's rendered view) so a later build
+    # notification can tag the requester — and any teammates being looped in on
+    # deploy, each carrying the optional custom message the requester wrote.
+    note = p.get("deploy_note")
+    watchers = [w for w in dict.fromkeys(p.get("deploy_watchers") or [])
+                if w and w != p.get("requester")]
+    markers = []
     if p.get("requester"):
-        # Hidden marker (invisible in GitHub's rendered view) so a later build
-        # notification can tag whoever asked for this PR.
-        body += f"\n\n<!-- {REQUESTER_MARKER}{p['requester']} -->"
+        # With no separate teammate to notify, the note rides on the requester.
+        markers.append(_requester_marker(p["requester"], note if not watchers else None))
+    for w in watchers:
+        markers.append(_requester_marker(w, note))
+    if markers:
+        body += "\n\n" + "\n".join(markers)
     payload = {
         "title": p.get("title") or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
         "head": p["api_head"],
@@ -382,8 +420,8 @@ def handle_build_notification(event, say, logger=None):
             if not pr:
                 continue
             body = fetch_pr_body(owner, repo, pr)
-            requesters = list(dict.fromkeys(REQUESTER_RE.findall(body)))  # pr-raiser + /track
-            if not requesters:
+            watchers = watcher_notes(body)  # {uid: note} — pr-raiser + /track
+            if not watchers:
                 log.info("build-notif: PR #%s in %s/%s has no requester marker",
                          pr["number"], owner, repo)
                 return
@@ -391,9 +429,12 @@ def handle_build_notification(event, say, logger=None):
             if not fresh:
                 return  # every status here already reported for this PR
             summary = "  ".join(h for h, _ in fresh)
-            mentions = " ".join(f"<@{u}>" for u in requesters)
-            say(text=f"{mentions} your PR <{pr['html_url']}|#{pr['number']}> — {summary}",
-                thread_ts=event.get("ts"))
+            mentions = " ".join(f"<@{u}>" for u in watchers)
+            text = f"{mentions} your PR <{pr['html_url']}|#{pr['number']}> — {summary}"
+            for uid, note in watchers.items():
+                if note:
+                    text += f"\n> <@{uid}>: {note}"
+            say(text=text, thread_ts=event.get("ts"))
             mark_pr_notified(owner, repo, pr, body, [s for _, s in fresh])
             return
     except requests.RequestException as e:
@@ -507,18 +548,30 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
 
     ack()
     cmd_part, title, body = split_command_title_body(text)
+    parts = _split_top_level(text)  # a 4th pipe segment is a deploy message
+    note = parts[3] if len(parts) > 3 and parts[3] else None
     p = parse_pr_command(cmd_part)
     if not p:
         respond(":warning: Usage: `/pr owner/repo base head`\n"
                 "• fork PR: `/pr owner/repo base forkowner:branch`\n"
                 "• compare style also works: `/pr owner/repo base...head`\n"
-                "• custom title/body: `/pr owner/repo base head | Title | Body`")
+                "• custom title/body: `/pr owner/repo base head | Title | Body`\n"
+                "• message a teammate on deploy: `/pr … @teammate | Title | Body | Message`")
         return
     if title:
         p["title"] = _strip_mentions(title)
     if body:
         p["body"] = _strip_mentions(body)
     p["requester"] = command.get("user_id")
+
+    # approvers may be @mentioned anywhere in the command, incl. after the
+    # title/body pipes — scan the whole text, not just the command part.
+    bot_id = (context or {}).get("bot_user_id")
+    approver_ids = mentioned_user_ids(text, exclude=bot_id)
+    if note:
+        # Loop the @mentioned teammates in on deploy, tagged with this message.
+        p["deploy_note"] = _strip_mentions(note)
+        p["deploy_watchers"] = approver_ids
 
     try:
         status, result = create_pr(p)
@@ -529,13 +582,8 @@ def handle_pr_command(ack, command, respond, client=None, context=None, logger=N
     # in_channel so the whole channel sees the PR, matching the link flow
     respond(text=_pr_result_text(status, result), response_type="in_channel")
 
-    if status == "created":
-        # approvers may be @mentioned anywhere in the command, incl. after the
-        # title/body pipes — scan the whole text, not just the command part.
-        bot_id = (context or {}).get("bot_user_id")
-        approver_ids = mentioned_user_ids(text, exclude=bot_id)
-        if approver_ids and client is not None:
-            dm_approvers(client, approver_ids, result, requester=command.get("user_id"), logger=logger)
+    if status == "created" and approver_ids and client is not None:
+        dm_approvers(client, approver_ids, result, requester=command.get("user_id"), logger=logger)
 
 
 DEFAULT_REPO_OWNER = "vmockinc"  # pre-filled in the /pr form; most PRs are under this org
@@ -607,6 +655,9 @@ def build_pr_modal(channel_id=""):
             {"type": "input", "block_id": "approvers", "optional": True,
              "label": {"type": "plain_text", "text": "Request approval from"},
              "element": approver},
+            _input_block("deploy_note", "Message on deploy (optional)",
+                         placeholder="Tagged to the approvers above when this PR builds & deploys",
+                         multiline=True, optional=True),
         ],
     }
 
@@ -655,6 +706,15 @@ def handle_pr_modal_submission(ack, body, view, client=None, context=None, logge
     channel = view.get("private_metadata") or ""
     p["requester"] = requester
 
+    bot_id = (context or {}).get("bot_user_id")
+    approvers = [a for a in (_modal_value(state, "approvers", "selected_users") or [])
+                 if a and a != bot_id]
+    deploy_note = (_modal_value(state, "deploy_note") or "").strip()
+    if deploy_note:
+        # Loop the approvers in on deploy too, each tagged with this message.
+        p["deploy_note"] = deploy_note
+        p["deploy_watchers"] = approvers
+
     try:
         status, result = create_pr(p)
     except requests.RequestException as e:
@@ -663,12 +723,8 @@ def handle_pr_modal_submission(ack, body, view, client=None, context=None, logge
 
     _post_modal_result(client, channel, requester, _pr_result_text(status, result), logger)
 
-    if status == "created":
-        bot_id = (context or {}).get("bot_user_id")
-        approvers = [a for a in (_modal_value(state, "approvers", "selected_users") or [])
-                     if a != bot_id]
-        if approvers and client is not None:
-            dm_approvers(client, approvers, result, requester=requester, logger=logger)
+    if status == "created" and approvers and client is not None:
+        dm_approvers(client, approvers, result, requester=requester, logger=logger)
 
 
 # A pull request reference: a github.com/.../pull/N link, or owner/repo#N / owner/repo N.
@@ -682,15 +738,21 @@ def handle_track_command(ack, command, respond, context=None, logger=None):
     PRs not opened through me."""
     ack()
     text = command.get("text", "") or ""
-    m = PR_URL_RE.search(text) or PR_REF_RE.search(text)
+    parts = _split_top_level(text)  # "<PR> @teammates | custom message"
+    head = parts[0]
+    note = parts[1] if len(parts) > 1 and parts[1] else None
+    m = PR_URL_RE.search(head) or PR_REF_RE.search(head)
     if not m:
-        respond(":warning: Usage: `/track <pull-request link> [@teammates]`  "
+        respond(":warning: Usage: `/track <pull-request link> [@teammates] [| message]`  "
                 "(or `/track owner/repo 123`)")
         return
     owner, repo, number = m.group(1), m.group(2), m.group(3)
     bot_id = (context or {}).get("bot_user_id")
-    watchers = [w for w in dict.fromkeys(
-        [command.get("user_id")] + mentioned_user_ids(text, exclude=bot_id)) if w]
+    mentioned = mentioned_user_ids(head, exclude=bot_id)  # scan before the pipe only
+    caller = command.get("user_id")
+    watchers = [w for w in dict.fromkeys([caller] + mentioned) if w]
+    # The message is for the teammates being looped in; with none, it's a self-note.
+    noted = set(mentioned or ([caller] if caller else []))
     p = {"owner": owner, "repo": repo}
     try:
         r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
@@ -700,19 +762,27 @@ def handle_track_command(ack, command, respond, context=None, logger=None):
             return
         pr = r.json()
         body = pr.get("body") or ""
-        new = [w for w in watchers if f"{REQUESTER_MARKER}{w}" not in body]
-        if not new:
+        to_add = []
+        for w in watchers:
+            msg = note if w in noted else None
+            marker = _requester_marker(w, msg)
+            # skip a plain re-add; a noted marker is added unless that exact one exists
+            already = (marker in body) if msg else (f"{REQUESTER_MARKER}{w}" in body)
+            if not already:
+                to_add.append((w, marker))
+        if not to_add:
             respond(f":information_source: Already tracking <{pr['html_url']}|#{number}>.")
             return
-        markers = "".join(f"\n<!-- {REQUESTER_MARKER}{w} -->" for w in new)
+        markers = "".join(f"\n{mk}" for _, mk in to_add)
         pr_r = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
                               headers=gh_headers(p), json={"body": body + markers}, timeout=30)
         if not pr_r.ok:
             respond(f":x: Couldn't update PR #{number} (HTTP {pr_r.status_code}) — "
                     "I may not have write access to that repo.")
             return
-        who = " ".join(f"<@{w}>" for w in new)
-        respond(f":eyes: Tracking <{pr['html_url']}|#{number}> for {who} — "
+        who = " ".join(f"<@{w}>" for w, _ in to_add)
+        extra = " with your message" if note else ""
+        respond(f":eyes: Tracking <{pr['html_url']}|#{number}> for {who}{extra} — "
                 "I'll tag them in #code-builds as it builds and deploys.")
     except requests.RequestException as e:
         respond(f":x: GitHub request failed: {e}")

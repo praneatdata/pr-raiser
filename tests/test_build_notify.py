@@ -1,4 +1,5 @@
 """Tests for tagging the PR requester with the build/deploy status."""
+import base64
 from unittest.mock import MagicMock, patch
 
 import bot
@@ -159,6 +160,37 @@ def test_no_candidate_repo_no_tag():
         bot.handle_build_notification(ev, say)
     fp.assert_not_called()
     say.assert_not_called()
+
+
+# --- custom per-watcher messages ------------------------------------------
+
+def test_marker_note_round_trips():
+    note = "please verify SSO | over 2 lines\nand a --> tricky bit"
+    mk = bot._requester_marker("UALICE", note)
+    assert mk.startswith("<!-- pr-raiser:requester=UALICE|") and "-->" in mk
+    assert bot.watcher_notes(mk) == {"UALICE": note}
+
+
+def test_plain_marker_has_no_note():
+    assert bot.watcher_notes(MARKER) == {"UREQ": ""}
+
+
+def test_note_wins_over_plain_for_same_user():
+    body = MARKER + "\n" + bot._requester_marker("UREQ", "verify once live")
+    assert bot.watcher_notes(body) == {"UREQ": "verify once live"}
+
+
+def test_deploy_message_is_quoted_under_status():
+    say = MagicMock()
+    enc = base64.b64encode("run the regression".encode()).decode()
+    body = f"desc\n<!-- pr-raiser:requester=UREQ -->\n<!-- pr-raiser:requester=UALICE|{enc} -->"
+    orgs, findpr, _, mark = _resolve()
+    with orgs, findpr, patch.object(bot, "fetch_pr_body", return_value=body), mark:
+        bot.handle_build_notification(_event(), say)
+    text = say.call_args.kwargs["text"]
+    assert "<@UREQ>" in text and "<@UALICE>" in text          # both tagged on the summary line
+    assert "> <@UALICE>: run the regression" in text          # alice's custom note quoted
+    assert "> <@UREQ>:" not in text                           # the plain watcher gets no note line
 
 
 # --- routing ---------------------------------------------------------------
