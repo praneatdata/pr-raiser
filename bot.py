@@ -44,20 +44,94 @@ def approver_mentions(p):
     return " ".join(f"<@{uid}>" for uid in ids)
 
 
-def gh_headers(p):
-    """Auth headers for this repo: its mapped token if configured, else GITHUB_TOKEN.
-
-    Exact "owner/repo" entries take precedence over "owner/*" wildcards.
-    """
-    env_name = _match_repo(TOKEN_ENV_VARS, p["owner"], p["repo"])
-    token = os.environ.get(env_name) if env_name else None
-    if env_name and not token:
-        log.warning("Env var %s from repo_tokens.py is not set; falling back to GITHUB_TOKEN", env_name)
+def _auth_headers(token):
     return {
-        "Authorization": f"Bearer {token or os.environ['GITHUB_TOKEN']}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+
+
+def token_env_names():
+    """Distinct GitHub token env vars that are actually set, GITHUB_TOKEN first.
+
+    Candidates are GITHUB_TOKEN, anything named in repo_tokens.py, and any other
+    GITHUB_TOKEN_* var in the environment — so granting the bot a new account's
+    access is just setting an env var. GITHUB_TOKEN leads so repos visible to
+    several tokens keep using the default one (the pre-discovery behavior).
+    """
+    extra = {n for n in os.environ if n.startswith("GITHUB_TOKEN_")}
+    out, seen = [], set()
+    for name in ["GITHUB_TOKEN"] + sorted(set(TOKEN_ENV_VARS.values()) | extra):
+        if name not in seen and os.environ.get(name):
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _list_org_repos_with(owner, token_env):
+    """Repo names under `owner` visible to one token. [] if it can't see the org."""
+    names, page = [], 1
+    while page <= 10:
+        try:
+            r = requests.get(
+                f"{GITHUB_API}/orgs/{owner}/repos", headers=_auth_headers(os.environ[token_env]),
+                params={"per_page": 100, "page": page, "type": "all"}, timeout=30,
+            )
+        except requests.RequestException as e:
+            log.warning("org listing for %s via %s failed: %s", owner, token_env, e)
+            break
+        if not r.ok or not isinstance(r.json(), list) or not r.json():
+            break
+        names += [x["name"] for x in r.json()]
+        page += 1
+    return names
+
+
+# Per-owner discovery cache (warm process): owner -> {"repos": [...], "tokens": {repo: env}}
+_ORG_DISCOVERY = {}
+
+
+def _discover_org(owner):
+    """List `owner` with every configured token and remember the union of repos
+    plus which token can see each.
+
+    No single token sees the whole org (the accounts have different repo access),
+    so a build message's repo can't be resolved — and its PR can't be read — from
+    one token's listing alone.
+    """
+    key = owner.lower()
+    if key in _ORG_DISCOVERY:
+        return _ORG_DISCOVERY[key]
+    repos, tokens = [], {}
+    for env in token_env_names():
+        for name in _list_org_repos_with(owner, env):
+            low = name.lower()
+            if low not in tokens:      # first token wins → GITHUB_TOKEN preferred
+                tokens[low] = env
+                repos.append(name)
+    _ORG_DISCOVERY[key] = {"repos": repos, "tokens": tokens}
+    log.info("org %s: discovered %d repos across %d token(s)",
+             owner, len(repos), len(token_env_names()))
+    return _ORG_DISCOVERY[key]
+
+
+def gh_headers(p):
+    """Auth headers for this repo: its configured token, else the token discovered
+    to have access, else GITHUB_TOKEN.
+
+    repo_tokens.py entries are explicit overrides and win (exact "owner/repo"
+    beating an "owner/*" wildcard); anything else is resolved by discovery.
+    """
+    owner, repo = p.get("owner", ""), p.get("repo", "")
+    env_name = _match_repo(TOKEN_ENV_VARS, owner, repo)
+    token = os.environ.get(env_name) if env_name else None
+    if env_name and not token:
+        log.warning("Env var %s from repo_tokens.py is not set; trying discovery", env_name)
+    if not token and owner and repo:
+        found = _discover_org(owner)["tokens"].get(repo.lower())
+        token = os.environ.get(found) if found else None
+    return _auth_headers(token or os.environ["GITHUB_TOKEN"])
 
 # Matches github.com/<owner>/<repo>/compare/<spec>, tolerating Slack's <...|...> wrapping
 COMPARE_RE = re.compile(
@@ -265,27 +339,11 @@ def find_pr_for_commit(owner, repo, sha):
     return prs[0] if isinstance(prs, list) and prs else None
 
 
-_ORG_REPOS = None
-
-
 def list_org_repos(owner):
-    """All repo names under `owner` (cached per warm process). Used to resolve a
-    build message's repo from the repo name embedded in its pipeline name."""
-    global _ORG_REPOS
-    if _ORG_REPOS is None:
-        names, page = [], 1
-        while page <= 10:
-            r = requests.get(
-                f"{GITHUB_API}/orgs/{owner}/repos",
-                headers=gh_headers({"owner": owner, "repo": ""}),
-                params={"per_page": 100, "page": page, "type": "all"}, timeout=30,
-            )
-            if not r.ok or not isinstance(r.json(), list) or not r.json():
-                break
-            names += [x["name"] for x in r.json()]
-            page += 1
-        _ORG_REPOS = names
-    return _ORG_REPOS
+    """All repo names under `owner` visible to ANY configured token (cached per
+    warm process). Used to resolve a build message's repo from the repo name
+    embedded in its pipeline name — one token's view misses much of the org."""
+    return _discover_org(owner)["repos"]
 
 
 def fetch_pr_body(owner, repo, pr):

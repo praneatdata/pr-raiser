@@ -80,6 +80,79 @@ def test_gh_headers_missing_env_falls_back(monkeypatch):
     assert h["Authorization"] == "Bearer ghp_default"
 
 
+# --- org discovery / auto-derived token map --------------------------------
+
+def _fake_org(views):
+    """views: {token_env: [repo names visible to it]} -> a _list_org_repos_with stub."""
+    return lambda owner, token_env: views.get(token_env, [])
+
+
+def test_list_org_repos_unions_across_tokens(monkeypatch):
+    # No single token sees the whole org, so the resolver must see the union.
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS", {"vmockinc/cmc-notes": "GITHUB_TOKEN_SAGNIK"})
+    monkeypatch.setenv("GITHUB_TOKEN_SAGNIK", "ghp_sagnik")
+    monkeypatch.setattr(bot, "_list_org_repos_with", _fake_org({
+        "GITHUB_TOKEN": ["dashboard-ui", "resume-ui"],
+        "GITHUB_TOKEN_SAGNIK": ["resume-ui", "jobs-ui", "cmc-notes"],
+    }))
+    assert sorted(bot.list_org_repos("vmockinc")) == \
+        ["cmc-notes", "dashboard-ui", "jobs-ui", "resume-ui"]
+
+
+def test_discovery_picks_the_token_that_can_see_the_repo(monkeypatch):
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS", {})
+    monkeypatch.setenv("GITHUB_TOKEN_SAGNIK", "ghp_sagnik")
+    monkeypatch.setattr(bot, "_list_org_repos_with", _fake_org({
+        "GITHUB_TOKEN": ["dashboard-ui"],
+        "GITHUB_TOKEN_SAGNIK": ["jobs-ui"],
+    }))
+    # jobs-ui is invisible to the default token -> discovery routes it to Sagnik's
+    assert bot.gh_headers({"owner": "vmockinc", "repo": "jobs-ui"})["Authorization"] \
+        == "Bearer ghp_sagnik"
+    # a repo the default token can see keeps using it
+    assert bot.gh_headers({"owner": "vmockinc", "repo": "dashboard-ui"})["Authorization"] \
+        == "Bearer ghp_default_token"
+
+
+def test_explicit_repo_tokens_override_discovery(monkeypatch):
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS", {"vmockinc/jobs-ui": "GITHUB_TOKEN_OVERRIDE"})
+    monkeypatch.setenv("GITHUB_TOKEN_OVERRIDE", "ghp_override")
+    monkeypatch.setenv("GITHUB_TOKEN_SAGNIK", "ghp_sagnik")
+    monkeypatch.setattr(bot, "_list_org_repos_with", _fake_org({
+        "GITHUB_TOKEN_SAGNIK": ["jobs-ui"]}))
+    assert bot.gh_headers({"owner": "vmockinc", "repo": "jobs-ui"})["Authorization"] \
+        == "Bearer ghp_override"
+
+
+def test_unknown_repo_falls_back_to_default_token(monkeypatch):
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS", {})
+    monkeypatch.setattr(bot, "_list_org_repos_with", _fake_org({}))
+    assert bot.gh_headers({"owner": "someone", "repo": "nope"})["Authorization"] \
+        == "Bearer ghp_default_token"
+
+
+def test_discovery_is_cached_per_owner(monkeypatch):
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS", {})
+    calls = []
+    monkeypatch.setattr(bot, "_list_org_repos_with",
+                        lambda owner, env: calls.append(env) or ["dashboard-ui"])
+    bot.list_org_repos("vmockinc")
+    after_first = len(calls)
+    bot.list_org_repos("vmockinc")
+    bot.gh_headers({"owner": "vmockinc", "repo": "dashboard-ui"})
+    assert after_first == len(bot.token_env_names())  # one listing per token...
+    assert len(calls) == after_first                  # ...then served from cache
+
+
+def test_token_env_names_skips_unset_and_dedupes(monkeypatch):
+    monkeypatch.setattr(bot, "TOKEN_ENV_VARS",
+                        {"a/b": "GITHUB_TOKEN_SAGNIK", "a/c": "GITHUB_TOKEN_SAGNIK",
+                         "a/d": "GITHUB_TOKEN_MISSING"})
+    monkeypatch.setenv("GITHUB_TOKEN_SAGNIK", "x")
+    monkeypatch.delenv("GITHUB_TOKEN_MISSING", raising=False)
+    assert bot.token_env_names() == ["GITHUB_TOKEN", "GITHUB_TOKEN_SAGNIK"]
+
+
 # --- create_pr -------------------------------------------------------------
 
 P = {"owner": "acme", "repo": "widgets", "base_branch": "main",

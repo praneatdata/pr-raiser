@@ -10,3 +10,24 @@ import os
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-token")
 os.environ.setdefault("SLACK_SIGNING_SECRET", "test-signing-secret")
 os.environ.setdefault("GITHUB_TOKEN", "ghp_default_token")
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_org_discovery(monkeypatch):
+    """Keep tests hermetic and independent of the developer's .env.
+
+    gh_headers falls back to org discovery for repos not in repo_tokens.py, which
+    would otherwise hit the real GitHub API. Stub the per-token listing (tests that
+    exercise discovery override it), drop real GITHUB_TOKEN_* vars that python-dotenv
+    loaded (so token discovery doesn't vary by machine), and clear the shared cache.
+    """
+    import bot
+
+    monkeypatch.setattr(bot, "_list_org_repos_with", lambda owner, token_env: [])
+    for name in [n for n in os.environ if n.startswith("GITHUB_TOKEN_")]:
+        monkeypatch.delenv(name, raising=False)
+    bot._ORG_DISCOVERY.clear()
+    yield
+    bot._ORG_DISCOVERY.clear()

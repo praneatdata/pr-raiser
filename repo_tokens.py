@@ -1,13 +1,19 @@
 """
-Repo → GitHub token mapping, for repos the default GITHUB_TOKEN can't reach.
+Repo → GitHub token OVERRIDES.
 
-Keys are "owner/repo" or an owner-level wildcard "owner/*", in lowercase;
-an exact repo entry beats the owner wildcard. Values are ENV VAR NAMES (not
-tokens! — this repo is public), holding a token of an account with access to
-that repo. Repos matching neither fall back to GITHUB_TOKEN.
+Usually you don't need an entry here: bot.token_env_names() picks up GITHUB_TOKEN
+and every GITHUB_TOKEN_* env var, lists the org with each, and remembers which
+token can see which repo (bot._discover_org). Granting access to more repos is
+therefore just setting another GITHUB_TOKEN_* env var in Vercel and redeploying.
 
-After adding an entry, set the env var in Vercel (and .env for local use)
-and redeploy — env changes don't apply to existing deployments.
+Add an entry only to force a specific token for a repo — e.g. when several tokens
+can see it and you want a particular account to author the PR. Keys are
+"owner/repo" or an owner-level wildcard "owner/*", in lowercase; an exact repo
+entry beats the wildcard, and both beat discovery. Values are ENV VAR NAMES (not
+tokens! — this repo was public), holding a token of an account with that access.
+
+After adding an entry, set the env var in Vercel (and .env for local use) and
+redeploy — env changes don't apply to existing deployments.
 """
 TOKEN_ENV_VARS = {
     "vmockinc/jobs-curation": "GITHUB_TOKEN_SAGNIK",
