@@ -341,6 +341,40 @@ def test_handle_message_opens_a_pr_per_compare_link():
     assert msg.count(":rocket:") == 3 and "PR #1" in msg and "PR #3" in msg
 
 
+def _slack_link(url):
+    """Slack delivers a pasted link as <url|label>; the label repeats the URL."""
+    return f"<{url}|{url.replace('https://', '')}>"
+
+
+def test_handle_message_one_pr_per_link_despite_slack_url_label():
+    # regression: <url|label> contains the compare URL twice, which made the bot
+    # open (and report) the same PR twice.
+    say = _say()
+    url = ("https://github.com/vmockinc/jobs-ui/compare/"
+           "uat...satyasaibhushan:user-event-sync-preferences-uat?expand=1")
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 1, "title": "t"})) as cp:
+        bot.handle_message({"text": _slack_link(url), "ts": "1"}, say, None)
+    assert cp.call_count == 1
+    assert say.call_args.kwargs["text"].count(":rocket:") == 1
+
+
+def test_handle_message_multi_slack_links_dedupe_each():
+    say = _say()
+    urls = [f"https://github.com/vmockinc/{r}/compare/uat...someone:feat?expand=1"
+            for r in ("jobs-ui", "dashboard-ui", "cmc-notes")]
+    text = " ".join(_slack_link(u) for u in urls)
+    seen = []
+
+    def fake(p):
+        seen.append(p["repo"])
+        return ("created", {"html_url": "u", "number": len(seen), "title": "t"})
+
+    with patch.object(bot, "create_pr", side_effect=fake):
+        bot.handle_message({"text": text, "ts": "1"}, say, None)
+    assert seen == ["jobs-ui", "dashboard-ui", "cmc-notes"]  # each exactly once
+
+
 def test_handle_message_multi_reports_each_outcome():
     say = _say()
     text = ("github.com/a/one/compare/main...f github.com/a/two/compare/main...f "

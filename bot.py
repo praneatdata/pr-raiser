@@ -604,8 +604,14 @@ def handle_message(event, say, client=None, context=None, logger=None):
     title = _strip_mentions(title) if title else None
     body = _strip_mentions(body) if body else None
 
-    lines, created = [], []
+    lines, created, seen = [], [], set()
     for m in matches:
+        # Slack delivers a pasted link as <url|label> and both halves contain the
+        # URL, so the same link matches twice — open one PR per distinct target.
+        ident = (m.group("owner").lower(), m.group("repo").lower(), m.group("spec"))
+        if ident in seen:
+            continue
+        seen.add(ident)
         p = parse_compare(m.group("owner"), m.group("repo"), m.group("spec"))
         if not p:
             lines.append(f":warning: Couldn't parse the compare link for "
