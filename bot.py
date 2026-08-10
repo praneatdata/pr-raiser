@@ -329,14 +329,28 @@ def find_open_pr(p):
     return r.json()[0] if r.ok and r.json() else None
 
 
+def _pr_rank_for_commit(pr, sha):
+    """Sort key: the PR this commit merged first, then merged PRs, then the rest."""
+    if (pr.get("merge_commit_sha") or "").startswith(sha):
+        return 0
+    return 1 if pr.get("merged_at") else 2
+
+
 def find_pr_for_commit(owner, repo, sha):
-    """The PR a commit belongs to (e.g. the merge commit's PR), or None."""
+    """The PR a commit belongs to, or None.
+
+    A commit can belong to several PRs — a deploy's merge commit is also carried
+    by any open promotion PR (e.g. uat→main) that contains it, and GitHub lists
+    those too. Pick the PR this commit actually merged, not just the first.
+    """
     r = requests.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/commits/{sha}/pulls",
         headers=gh_headers({"owner": owner, "repo": repo}), timeout=30,
     )
     prs = r.json() if r.ok else []
-    return prs[0] if isinstance(prs, list) and prs else None
+    if not isinstance(prs, list) or not prs:
+        return None
+    return min(prs, key=lambda pr: _pr_rank_for_commit(pr, sha))
 
 
 def list_org_repos(owner):

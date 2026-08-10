@@ -162,6 +162,43 @@ def test_no_candidate_repo_no_tag():
     say.assert_not_called()
 
 
+# --- commit -> PR selection -----------------------------------------------
+
+def _pulls_resp(prs):
+    r = MagicMock()
+    r.ok = True
+    r.json.return_value = prs
+    return r
+
+
+def test_picks_the_pr_the_commit_merged_not_the_first():
+    # regression: a deploy's merge commit is also carried by an open promotion PR,
+    # and GitHub lists that one first; the merged PR is the one with the watcher.
+    prs = [{"number": 187, "state": "open", "merged_at": None, "merge_commit_sha": "999"},
+           {"number": 517, "state": "closed", "merged_at": "2026-08-10T00:00:00Z",
+            "merge_commit_sha": "e130f3ecafe"}]
+    with patch.object(bot.requests, "get", return_value=_pulls_resp(prs)):
+        assert bot.find_pr_for_commit("o", "r", "e130f3e")["number"] == 517
+
+
+def test_prefers_merged_pr_when_no_merge_sha_match():
+    prs = [{"number": 1, "state": "open", "merged_at": None, "merge_commit_sha": None},
+           {"number": 2, "state": "closed", "merged_at": "2026-08-10T00:00:00Z",
+            "merge_commit_sha": "abc"}]
+    with patch.object(bot.requests, "get", return_value=_pulls_resp(prs)):
+        assert bot.find_pr_for_commit("o", "r", "zzz")["number"] == 2
+
+
+def test_single_pr_is_returned_unchanged():
+    with patch.object(bot.requests, "get", return_value=_pulls_resp([{"number": 9}])):
+        assert bot.find_pr_for_commit("o", "r", "sha")["number"] == 9
+
+
+def test_no_prs_for_commit_returns_none():
+    with patch.object(bot.requests, "get", return_value=_pulls_resp([])):
+        assert bot.find_pr_for_commit("o", "r", "sha") is None
+
+
 # --- custom per-watcher messages ------------------------------------------
 
 def test_marker_note_round_trips():
