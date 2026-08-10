@@ -40,6 +40,7 @@ except Exception:
 
 def _debug_payload(observed_path):
     """Self-checks: what's configured and what broke. Never exposes secret values."""
+    import kv
     from repo_tokens import TOKEN_ENV_VARS
 
     required = {"SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "GITHUB_TOKEN"}
@@ -49,6 +50,7 @@ def _debug_payload(observed_path):
         "python": sys.version.split()[0],
         "observed_path": observed_path,  # what Vercel actually handed Flask
         "env": {name: bool(os.environ.get(name)) for name in sorted(required)},
+        "kv_configured": kv.kv_available(),  # /track uses the KV store when True
         "init_ok": _init_error is None,
         "init_error": _init_error,
     }

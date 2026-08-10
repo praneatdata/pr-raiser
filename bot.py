@@ -25,6 +25,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("pr-raiser")
 
+import kv
 from approvers import APPROVERS
 from repo_tokens import TOKEN_ENV_VARS
 
@@ -108,6 +109,45 @@ def watcher_notes(body):
         if uid not in out or (note and not out[uid]):
             out[uid] = note
     return out
+
+
+# --- KV-backed watcher/dedup store (keyed by PR, needs no write to that repo) ---
+
+def _kv_watch_key(owner, repo, number):
+    return f"prwatch:{owner.lower()}/{repo.lower()}#{number}"
+
+
+def _kv_notif_key(owner, repo, number):
+    return f"prnotif:{owner.lower()}/{repo.lower()}#{number}"
+
+
+def kv_add_watchers(owner, repo, number, watchers):
+    """Record {uid: note} watchers for a PR. A note overwrites (upgrades) an
+    existing entry; a plain add uses HSETNX so it never downgrades an existing
+    note. Returns the uids actually written (new, or upgraded from no-note)."""
+    key = _kv_watch_key(owner, repo, number)
+    existing = kv.hgetall(key)
+    written = []
+    for uid, note in watchers.items():
+        if uid in existing and (not note or existing[uid]):
+            continue  # already present, and we'd not be adding a new note
+        kv.hset(key, uid, note or "", nx=not note)
+        written.append(uid)
+    return written
+
+
+def kv_get_watchers(owner, repo, number):
+    """{uid: note} watchers recorded for a PR in the KV store."""
+    return kv.hgetall(_kv_watch_key(owner, repo, number))
+
+
+def kv_get_notified(owner, repo, number):
+    return set(kv.smembers(_kv_notif_key(owner, repo, number)))
+
+
+def kv_add_notified(owner, repo, number, slugs):
+    if slugs:
+        kv.sadd(_kv_notif_key(owner, repo, number), *slugs)
 
 
 def mentioned_user_ids(text, exclude=None):
@@ -271,22 +311,29 @@ def mark_pr_notified(owner, repo, pr, body, slugs):
     )
 
 
-def create_pr(p):
-    body = p.get("body") or "Opened automatically from a compare link shared in Slack."
-    # Hidden markers (invisible in GitHub's rendered view) so a later build
-    # notification can tag the requester — and any teammates being looped in on
-    # deploy, each carrying the optional custom message the requester wrote.
-    note = p.get("deploy_note")
+def _watcher_map(p):
+    """{uid: note} for the requester + any teammates being looped in on deploy.
+    The note rides on the requester only when there's no separate teammate."""
+    note = p.get("deploy_note") or ""
     watchers = [w for w in dict.fromkeys(p.get("deploy_watchers") or [])
                 if w and w != p.get("requester")]
-    markers = []
+    wmap = {}
     if p.get("requester"):
-        # With no separate teammate to notify, the note rides on the requester.
-        markers.append(_requester_marker(p["requester"], note if not watchers else None))
+        wmap[p["requester"]] = "" if watchers else note
     for w in watchers:
-        markers.append(_requester_marker(w, note))
-    if markers:
-        body += "\n\n" + "\n".join(markers)
+        wmap[w] = note
+    return wmap
+
+
+def create_pr(p):
+    body = p.get("body") or "Opened automatically from a compare link shared in Slack."
+    wmap = _watcher_map(p)
+    # Where the bot has push access (it's opening the PR) we could edit the body,
+    # but the KV store is the source of truth when configured. Only fall back to
+    # hidden body markers when there's no KV, so old deployments keep working.
+    if wmap and not kv.kv_available():
+        body += "\n\n" + "\n".join(
+            _requester_marker(uid, note or None) for uid, note in wmap.items())
     payload = {
         "title": p.get("title") or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
         "head": p["api_head"],
@@ -303,7 +350,13 @@ def create_pr(p):
         headers=gh_headers(p), json=payload, timeout=30,
     )
     if r.status_code == 201:
-        return "created", r.json()
+        pr = r.json()
+        if wmap and kv.kv_available():
+            try:
+                kv_add_watchers(p["owner"], p["repo"], pr["number"], wmap)
+            except requests.RequestException as e:
+                log.warning("KV watcher write failed for PR #%s: %s", pr.get("number"), e)
+        return "created", pr
     if r.status_code == 422:                     # usually "a PR already exists"
         existing = find_open_pr(p)
         if existing:
@@ -420,22 +473,34 @@ def handle_build_notification(event, say, logger=None):
             if not pr:
                 continue
             body = fetch_pr_body(owner, repo, pr)
-            watchers = watcher_notes(body)  # {uid: note} — pr-raiser + /track
+            number = pr["number"]
+            watchers = watcher_notes(body)  # legacy body markers (PRs opened pre-KV)
+            kv_on = kv.kv_available()
+            if kv_on:  # primary source: the KV store (works without repo write)
+                for uid, note in kv_get_watchers(owner, repo, number).items():
+                    if uid not in watchers or (note and not watchers[uid]):
+                        watchers[uid] = note
             if not watchers:
-                log.info("build-notif: PR #%s in %s/%s has no requester marker",
-                         pr["number"], owner, repo)
+                log.info("build-notif: PR #%s in %s/%s has no watchers",
+                         number, owner, repo)
                 return
-            fresh = [(h, s) for h, s in statuses if f"{NOTIFIED_MARKER}:{s}" not in body]
+            done = kv_get_notified(owner, repo, number) if kv_on else set()
+            fresh = [(h, s) for h, s in statuses
+                     if s not in done and f"{NOTIFIED_MARKER}:{s}" not in body]
             if not fresh:
                 return  # every status here already reported for this PR
             summary = "  ".join(h for h, _ in fresh)
             mentions = " ".join(f"<@{u}>" for u in watchers)
-            text = f"{mentions} your PR <{pr['html_url']}|#{pr['number']}> — {summary}"
+            text = f"{mentions} your PR <{pr['html_url']}|#{number}> — {summary}"
             for uid, note in watchers.items():
                 if note:
                     text += f"\n> <@{uid}>: {note}"
             say(text=text, thread_ts=event.get("ts"))
-            mark_pr_notified(owner, repo, pr, body, [s for _, s in fresh])
+            fresh_slugs = [s for _, s in fresh]
+            if kv_on:
+                kv_add_notified(owner, repo, number, fresh_slugs)  # dedup, no repo write
+            else:
+                mark_pr_notified(owner, repo, pr, body, fresh_slugs)
             return
     except requests.RequestException as e:
         (logger or log).warning("build-notif failed: %s", e)
@@ -733,9 +798,11 @@ PR_REF_RE = re.compile(r"([\w.-]+)/([\w.-]+)[#\s]+(\d+)")
 
 
 def handle_track_command(ack, command, respond, context=None, logger=None):
-    """`/track <PR> [@people]` — stamp requester markers onto a PR so the caller
+    """`/track <PR> [@people] [| message]` — record watchers for a PR so the caller
     (and anyone @mentioned) get the same #code-builds build/deploy tags, even for
-    PRs not opened through me."""
+    PRs not opened through me. Watchers live in the KV store (needs only read
+    access to the PR); without a KV, falls back to hidden PR-body markers, which
+    require push access to that repo."""
     ack()
     text = command.get("text", "") or ""
     parts = _split_top_level(text)  # "<PR> @teammates | custom message"
@@ -761,31 +828,38 @@ def handle_track_command(ack, command, respond, context=None, logger=None):
             respond(f":x: Couldn't find PR #{number} in {owner}/{repo} (HTTP {r.status_code}).")
             return
         pr = r.json()
-        body = pr.get("body") or ""
-        to_add = []
-        for w in watchers:
-            msg = note if w in noted else None
-            marker = _requester_marker(w, msg)
-            # skip a plain re-add; a noted marker is added unless that exact one exists
-            already = (marker in body) if msg else (f"{REQUESTER_MARKER}{w}" in body)
-            if not already:
-                to_add.append((w, marker))
-        if not to_add:
+        # Each watcher's note ("" = none); the message is only for the `noted` set.
+        wmap = {w: (note if w in noted else "") for w in watchers}
+        if kv.kv_available():
+            new = kv_add_watchers(owner, repo, number, wmap)  # no write to the target repo
+        else:
+            # Legacy fallback: stamp hidden markers into the PR body (needs push access).
+            body = pr.get("body") or ""
+            to_add = []
+            for w in watchers:
+                msg = wmap[w] or None
+                marker = _requester_marker(w, msg)
+                already = (marker in body) if msg else (f"{REQUESTER_MARKER}{w}" in body)
+                if not already:
+                    to_add.append((w, marker))
+            new = [w for w, _ in to_add]
+            if to_add:
+                pr_r = requests.patch(
+                    f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}", headers=gh_headers(p),
+                    json={"body": body + "".join(f"\n{mk}" for _, mk in to_add)}, timeout=30)
+                if not pr_r.ok:
+                    respond(f":x: I don't have write access to `{owner}/{repo}`, so I can't "
+                            f"track PR #{number} there (HTTP {pr_r.status_code}).")
+                    return
+        if not new:
             respond(f":information_source: Already tracking <{pr['html_url']}|#{number}>.")
             return
-        markers = "".join(f"\n{mk}" for _, mk in to_add)
-        pr_r = requests.patch(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
-                              headers=gh_headers(p), json={"body": body + markers}, timeout=30)
-        if not pr_r.ok:
-            respond(f":x: Couldn't update PR #{number} (HTTP {pr_r.status_code}) — "
-                    "I may not have write access to that repo.")
-            return
-        who = " ".join(f"<@{w}>" for w, _ in to_add)
+        who = " ".join(f"<@{w}>" for w in new)
         extra = " with your message" if note else ""
         respond(f":eyes: Tracking <{pr['html_url']}|#{number}> for {who}{extra} — "
                 "I'll tag them in #code-builds as it builds and deploys.")
     except requests.RequestException as e:
-        respond(f":x: GitHub request failed: {e}")
+        respond(f":x: Request failed: {e}")
 
 
 def build_app(process_before_response=False, token_verification=True):
