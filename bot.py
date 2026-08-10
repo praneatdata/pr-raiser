@@ -529,50 +529,60 @@ def handle_message(event, say, client=None, context=None, logger=None):
 
     raw = event.get("text", "") or ""
     cmd_part, title, body = split_command_title_body(raw)
-    # Treat pipes as title/body delimiters only when the compare link is in the
+    # Treat pipes as title/body delimiters only when a compare link is in the
     # leading part; an incidental "|" in an ordinary message must not break
     # detection or hijack the title/body.
     if not COMPARE_RE.search(cmd_part):
         cmd_part, title, body = raw, None, None
 
-    match = COMPARE_RE.search(cmd_part)
-    if not match:
+    # One message may carry several compare links — open a PR for each. A shared
+    # title/body applies to all (typical for the same branch across repos).
+    matches = list(COMPARE_RE.finditer(cmd_part))
+    if not matches:
         return
 
     thread_ts = event.get("thread_ts") or event.get("ts")
-    p = parse_compare(match.group("owner"), match.group("repo"), match.group("spec"))
-    if not p:
-        say(text=":warning: I found a compare link but couldn't parse it.", thread_ts=thread_ts)
-        return
-    if title:
-        p["title"] = _strip_mentions(title)
-    if body:
-        p["body"] = _strip_mentions(body)
-    p["requester"] = event.get("user")
+    requester = event.get("user")
+    title = _strip_mentions(title) if title else None
+    body = _strip_mentions(body) if body else None
 
-    log.info("Compare link from %s: %s/%s  %s -> %s",
-             event.get("user"), p["owner"], p["repo"], p["api_head"], p["base_branch"])
+    lines, created = [], []
+    for m in matches:
+        p = parse_compare(m.group("owner"), m.group("repo"), m.group("spec"))
+        if not p:
+            lines.append(f":warning: Couldn't parse the compare link for "
+                         f"`{m.group('owner')}/{m.group('repo')}`.")
+            continue
+        if title:
+            p["title"] = title
+        if body:
+            p["body"] = body
+        p["requester"] = requester
+        log.info("Compare link from %s: %s/%s  %s -> %s",
+                 requester, p["owner"], p["repo"], p["api_head"], p["base_branch"])
+        try:
+            status, result = create_pr(p)
+        except requests.RequestException as e:
+            lines.append(f":x: GitHub request failed for `{p['owner']}/{p['repo']}`: {e}")
+            continue
+        line = _pr_result_text(status, result)
+        if status == "created":
+            mentions = approver_mentions(p)
+            if mentions:
+                line += f"\n{mentions} — please review and approve when you can."
+            created.append(result)
+        lines.append(line)
 
-    try:
-        status, result = create_pr(p)
-    except requests.RequestException as e:
-        say(text=f":x: GitHub request failed: {e}", thread_ts=thread_ts)
-        return
+    say(text="\n\n".join(lines), thread_ts=thread_ts)
 
-    text = _pr_result_text(status, result)
-    if status == "created":
-        mentions = approver_mentions(p)
-        if mentions:
-            text += f"\n{mentions} — please review and approve when you can."
-    say(text=text, thread_ts=thread_ts)
-
-    if status == "created":
-        # DM anyone @mentioned anywhere in the message (excluding the bot) the
-        # PR link, asking them to approve.
+    # DM anyone @mentioned anywhere in the message (excluding the bot) each PR
+    # that was newly opened, asking them to approve.
+    if created and client is not None:
         bot_id = (context or {}).get("bot_user_id")
         approver_ids = mentioned_user_ids(raw, exclude=bot_id)
-        if approver_ids and client is not None:
-            dm_approvers(client, approver_ids, result, requester=event.get("user"), logger=logger)
+        if approver_ids:
+            for result in created:
+                dm_approvers(client, approver_ids, result, requester=requester, logger=logger)
 
 
 def parse_pr_command(text):

@@ -245,6 +245,70 @@ def test_handle_message_exists_does_not_tag(monkeypatch):
     assert "<@" not in say.call_args.kwargs["text"]
 
 
+# --- multiple compare links in one message --------------------------------
+
+def test_handle_message_opens_a_pr_per_compare_link():
+    say = _say()
+    text = ("github.com/vmockinc/cmc-calendar-management-system/compare/uat...satyasaibhushan:feat?expand=1 "
+            "github.com/vmockinc/jobs-ui/compare/uat...satyasaibhushan:feat?expand=1 "
+            "github.com/vmockinc/cmc-accounts-data-sync/compare/uat...satyasaibhushan:feat?expand=1")
+    calls = []
+
+    def fake(p):
+        calls.append((p["owner"], p["repo"]))
+        return ("created", {"html_url": "u", "number": len(calls), "title": "t"})
+
+    with patch.object(bot, "create_pr", side_effect=fake):
+        bot.handle_message({"text": text, "ts": "1.2"}, say, None)
+    assert calls == [("vmockinc", "cmc-calendar-management-system"),
+                     ("vmockinc", "jobs-ui"),
+                     ("vmockinc", "cmc-accounts-data-sync")]
+    say.assert_called_once()
+    msg = say.call_args.kwargs["text"]
+    assert msg.count(":rocket:") == 3 and "PR #1" in msg and "PR #3" in msg
+
+
+def test_handle_message_multi_reports_each_outcome():
+    say = _say()
+    text = ("github.com/a/one/compare/main...f github.com/a/two/compare/main...f "
+            "github.com/a/three/compare/main...f")
+    outcomes = [("created", {"html_url": "u", "number": 1, "title": "t"}),
+                ("exists", {"html_url": "u", "number": 2}),
+                ("error", FakeResp(422, {"message": "Validation Failed",
+                                         "errors": [{"message": "fork_collab"}]}))]
+    with patch.object(bot, "create_pr", side_effect=outcomes):
+        bot.handle_message({"text": text, "ts": "1"}, say, None)
+    msg = say.call_args.kwargs["text"]
+    assert ":rocket:" in msg and ":information_source:" in msg and ":x:" in msg and "fork_collab" in msg
+
+
+def test_handle_message_multi_shares_title_body():
+    say = _say()
+    text = ("github.com/a/one/compare/main...f github.com/a/two/compare/main...f "
+            "| My Title | My Body")
+    seen = []
+
+    def fake(p):
+        seen.append((p.get("title"), p.get("body")))
+        return ("created", {"html_url": "u", "number": len(seen), "title": "t"})
+
+    with patch.object(bot, "create_pr", side_effect=fake):
+        bot.handle_message({"text": text, "ts": "1"}, say, None)
+    assert seen == [("My Title", "My Body"), ("My Title", "My Body")]
+
+
+def test_handle_message_multi_dms_approver_for_each_created():
+    client, say = MagicMock(), _say()
+    text = "github.com/a/one/compare/main...f github.com/a/two/compare/main...f <@UPERSON>"
+    outcomes = [("created", {"html_url": "u1", "number": 1, "title": "t"}),
+                ("created", {"html_url": "u2", "number": 2, "title": "t"})]
+    with patch.object(bot, "create_pr", side_effect=outcomes):
+        bot.handle_message({"text": text, "ts": "1"}, say, client=client,
+                           context={"bot_user_id": "UBOT"})
+    channels = [c.kwargs.get("channel") for c in client.chat_postMessage.call_args_list]
+    assert channels.count("UPERSON") == 2  # one approval DM per newly-opened PR
+
+
 # --- inline @mention extraction --------------------------------------------
 
 def test_mentioned_user_ids_extracts_and_dedupes():
