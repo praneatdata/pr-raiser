@@ -224,6 +224,21 @@ def kv_add_notified(owner, repo, number, slugs):
         kv.sadd(_kv_notif_key(owner, repo, number), *slugs)
 
 
+def kv_claim_status(owner, repo, number, slug):
+    """Atomically claim one status for reporting: True only for the caller that
+    actually added it. BuildBot edits its message (and Slack retries), so several
+    invocations can run concurrently — checking-then-writing would let both post.
+    SADD returns the number of NEW members, so exactly one racer sees 1."""
+    return kv.sadd(_kv_notif_key(owner, repo, number), slug) == 1
+
+
+def kv_release_status(owner, repo, number, slugs):
+    """Give back claims when the notification couldn't be posted, so a later
+    build message can report the status instead of it being silently lost."""
+    if slugs:
+        kv.srem(_kv_notif_key(owner, repo, number), *slugs)
+
+
 def mentioned_user_ids(text, exclude=None):
     """Distinct Slack user IDs @mentioned in `text`, in order, minus `exclude` (the bot)."""
     seen, out = set(), []
@@ -556,22 +571,32 @@ def handle_build_notification(event, say, logger=None):
                 log.info("build-notif: PR #%s in %s/%s has no watchers",
                          number, owner, repo)
                 return
-            done = kv_get_notified(owner, repo, number) if kv_on else set()
-            fresh = [(h, s) for h, s in statuses
-                     if s not in done and f"{NOTIFIED_MARKER}:{s}" not in body]
+            # Claim each status BEFORE posting: BuildBot edits its message and
+            # Slack retries, so invocations overlap — a read-then-write dedup let
+            # both post the same status twice.
+            fresh = []
+            for h, s in statuses:
+                if f"{NOTIFIED_MARKER}:{s}" in body:
+                    continue  # already reported via a legacy body marker
+                if kv_on and not kv_claim_status(owner, repo, number, s):
+                    continue  # another invocation claimed it first
+                fresh.append((h, s))
             if not fresh:
                 return  # every status here already reported for this PR
+            fresh_slugs = [s for _, s in fresh]
             summary = "  ".join(h for h, _ in fresh)
             mentions = " ".join(f"<@{u}>" for u in watchers)
             text = f"{mentions} your PR <{pr['html_url']}|#{number}> — {summary}"
             for uid, note in watchers.items():
                 if note:
                     text += f"\n> <@{uid}>: {note}"
-            say(text=text, thread_ts=event.get("ts"))
-            fresh_slugs = [s for _, s in fresh]
-            if kv_on:
-                kv_add_notified(owner, repo, number, fresh_slugs)  # dedup, no repo write
-            else:
+            try:
+                say(text=text, thread_ts=event.get("ts"))
+            except Exception:
+                if kv_on:  # couldn't tell anyone — let a later message retry
+                    kv_release_status(owner, repo, number, fresh_slugs)
+                raise
+            if not kv_on:
                 mark_pr_notified(owner, repo, pr, body, fresh_slugs)
             return
     except requests.RequestException as e:

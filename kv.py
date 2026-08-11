@@ -57,9 +57,17 @@ def hgetall(key):
 
 
 def sadd(key, *members):
+    """Add members to a set; returns how many were NEW. That count is what makes
+    an atomic claim possible — exactly one racing caller sees 1 for a member."""
     if not members:
         return 0
     return _command(["SADD", key, *members])
+
+
+def srem(key, *members):
+    if not members:
+        return 0
+    return _command(["SREM", key, *members])
 
 
 def smembers(key):

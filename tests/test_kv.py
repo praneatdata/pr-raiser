@@ -35,12 +35,19 @@ class FakeKV:
         st.update(members)
         return added
 
+    def srem(self, key, *members):
+        st = self.s.get(key, set())
+        removed = sum(1 for m in members if m in st)
+        st.difference_update(members)
+        return removed
+
     def smembers(self, key):
         return list(self.s.get(key, set()))
 
     def patched(self):
         return patch.multiple(bot.kv, kv_available=self.kv_available, hset=self.hset,
-                              hgetall=self.hgetall, sadd=self.sadd, smembers=self.smembers)
+                              hgetall=self.hgetall, sadd=self.sadd, srem=self.srem,
+                              smembers=self.smembers)
 
 
 class FakeResp:
@@ -170,6 +177,69 @@ def test_build_notif_tags_watchers_from_kv_and_dedups():
         say.reset_mock()
         bot.handle_build_notification(_build_event(), say)
         say.assert_not_called()
+
+
+def test_build_notif_no_double_tag_on_message_edit():
+    # regression: BuildBot posts once then EDITS the message, so the same status
+    # arrives twice. Only the first invocation may tag.
+    fake = FakeKV()
+    fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", 190)] = {"UREQ": ""}
+    say = MagicMock()
+    with fake.patched(), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 190, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        bot.handle_build_notification(_build_event(), say)          # original message
+        bot.handle_build_notification(_build_event(), say)          # the edit
+    say.assert_called_once()
+
+
+def test_build_notif_concurrent_invocations_tag_once():
+    # The real race: two invocations both read the dedup state before either
+    # writes. The claim must be atomic, not check-then-set.
+    fake = FakeKV()
+    fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", 190)] = {"UREQ": ""}
+    say = MagicMock()
+    reads = []
+    real_sadd = fake.sadd
+
+    def racy_sadd(key, *members):
+        # first caller's claim is interleaved with a second full invocation
+        reads.append(key)
+        if len(reads) == 1:
+            with fake.patched(), \
+                 patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+                 patch.object(bot, "find_pr_for_commit",
+                              return_value={"number": 190, "html_url": "u"}), \
+                 patch.object(bot, "fetch_pr_body", return_value=""):
+                bot.handle_build_notification(_build_event(), say)
+        return real_sadd(key, *members)
+
+    with fake.patched(), patch.object(bot.kv, "sadd", racy_sadd), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 190, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        bot.handle_build_notification(_build_event(), say)
+    say.assert_called_once()  # exactly one tag despite overlapping runs
+
+
+def test_build_notif_releases_claim_when_post_fails():
+    # If Slack rejects the message nobody was told, so the status must stay
+    # claimable for the next build message.
+    fake = FakeKV()
+    fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", 190)] = {"UREQ": ""}
+    say = MagicMock(side_effect=RuntimeError("slack down"))
+    with fake.patched(), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 190, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        with pytest.raises(RuntimeError):
+            bot.handle_build_notification(_build_event(), say)
+        assert fake.smembers(bot._kv_notif_key("vmockinc", "dashboard-ui", 190)) == []
+        # a later build message can still report it
+        ok = MagicMock()
+        bot.handle_build_notification(_build_event(), ok)
+        ok.assert_called_once()
 
 
 def test_build_notif_kv_and_legacy_body_markers_merge():
