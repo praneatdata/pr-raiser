@@ -93,7 +93,7 @@ def test_resolves_repo_from_commit_id_field():
     orgs, findpr, body, mark = _resolve()
     with orgs, findpr as fp, body, mark:
         bot.handle_build_notification(_event(), say)
-    fp.assert_called_once_with("vmockinc", "dashboard-ui", "c5fb313")
+    fp.assert_called_once_with("vmockinc", "dashboard-ui", "c5fb313", "uat")
 
 
 def test_fuzzy_matches_non_substring_repo():
@@ -104,7 +104,7 @@ def test_fuzzy_matches_non_substring_repo():
          patch.object(bot, "fetch_pr_body", return_value=MARKER), \
          patch.object(bot, "mark_pr_notified"):
         bot.handle_build_notification(ev, say)
-    assert fp.call_args_list[0].args == ("vmockinc", "jobs-api-am", "c5fb313")
+    assert fp.call_args_list[0].args == ("vmockinc", "jobs-api-am", "c5fb313", "uat")
     assert "<@UREQ>" in say.call_args.kwargs["text"]
 
 
@@ -262,3 +262,61 @@ def test_delete_and_human_edit_ignored():
         bot.handle_message({"subtype": "message_changed", "message": {"user": "U1"}}, say)
     hbn.assert_not_called()
     cp.assert_not_called()
+
+
+# --- pipeline branch must match the PR's base branch -----------------------
+
+def test_pipeline_branch_extraction():
+    assert bot._pipeline_branch(_event(pipeline="pipeline-cmc-ims-api-schedules-master")) == "master"
+    assert bot._pipeline_branch(_event(pipeline="pipeline-jobs-am-uat-Pipeline")) == "uat"
+    assert bot._pipeline_branch(_event(pipeline="pipeline-cmc-cmc-accounts-data-sync-uat")) == "uat"
+    # an unrecognised suffix must not filter every PR out
+    assert bot._pipeline_branch(_event(pipeline="pipeline-some-service-xyz")) is None
+
+
+def test_master_build_does_not_tag_a_uat_pr():
+    # regression (Sai): commit c7b0af2 was introduced by PR #591 targeting uat.
+    # Once uat merged into master, the master pipeline's staging deploy tagged
+    # that uat PR's author. A master build may only report master PRs.
+    with patch.object(bot.requests, "get",
+                      return_value=_pulls_resp([{"number": 591, "state": "closed",
+                                                 "merged_at": "2026-08-14T00:00:00Z",
+                                                 "merge_commit_sha": "271a53d",
+                                                 "base": {"ref": "uat"}}])):
+        assert bot.find_pr_for_commit("vmockinc", "ims-api-schedules", "c7b0af2", "master") is None
+        # the uat pipeline still reports it
+        pr = bot.find_pr_for_commit("vmockinc", "ims-api-schedules", "c7b0af2", "uat")
+    assert pr["number"] == 591
+
+
+def test_master_build_tags_the_promotion_pr():
+    # the uat->master promotion PR is the right one to tag on a master build
+    prs = [{"number": 591, "state": "closed", "merged_at": "2026-08-01T00:00:00Z",
+            "merge_commit_sha": "271a53d", "base": {"ref": "uat"}},
+           {"number": 640, "state": "closed", "merged_at": "2026-08-14T00:00:00Z",
+            "merge_commit_sha": "c7b0af2", "base": {"ref": "master"}}]
+    with patch.object(bot.requests, "get", return_value=_pulls_resp(prs)):
+        pr = bot.find_pr_for_commit("vmockinc", "ims-api-schedules", "c7b0af2", "master")
+    assert pr["number"] == 640
+
+
+def test_unknown_pipeline_branch_still_matches_on_commit():
+    prs = [{"number": 7, "state": "closed", "merged_at": "2026-08-14T00:00:00Z",
+            "merge_commit_sha": "abc1234", "base": {"ref": "uat"}}]
+    with patch.object(bot.requests, "get", return_value=_pulls_resp(prs)):
+        pr = bot.find_pr_for_commit("vmockinc", "x", "abc1234", None)
+    assert pr["number"] == 7
+
+
+def test_master_pipeline_end_to_end_no_tag_for_uat_pr():
+    say = MagicMock()
+    ev = _event(pipeline="pipeline-cmc-ims-api-schedules-master",
+                stages=":white_check_mark: Build\t:white_check_mark: DeployTo-staging-us")
+    with patch.object(bot, "list_org_repos", return_value=["ims-api-schedules"]), \
+         patch.object(bot.requests, "get",
+                      return_value=_pulls_resp([{"number": 591, "state": "closed",
+                                                 "merged_at": "2026-08-14T00:00:00Z",
+                                                 "merge_commit_sha": "271a53d",
+                                                 "base": {"ref": "uat"}}])):
+        bot.handle_build_notification(ev, say)
+    say.assert_not_called()  # silence beats tagging the wrong person

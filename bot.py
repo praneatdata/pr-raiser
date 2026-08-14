@@ -351,12 +351,18 @@ def _pr_rank_for_commit(pr, sha):
     return 1 if pr.get("merged_at") else 2
 
 
-def find_pr_for_commit(owner, repo, sha):
+def find_pr_for_commit(owner, repo, sha, branch=None):
     """The PR a commit belongs to, or None.
 
     A commit can belong to several PRs — a deploy's merge commit is also carried
     by any open promotion PR (e.g. uat→main) that contains it, and GitHub lists
     those too. Pick the PR this commit actually merged, not just the first.
+
+    `branch` is the branch the pipeline builds. GitHub keeps listing the PR that
+    first introduced a commit, so once uat merges into master the master build
+    would otherwise re-tag the author of the original uat PR. Restrict to PRs
+    targeting the branch being deployed, and report nothing rather than the
+    wrong PR when none do.
     """
     r = requests.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/commits/{sha}/pulls",
@@ -365,6 +371,11 @@ def find_pr_for_commit(owner, repo, sha):
     prs = r.json() if r.ok else []
     if not isinstance(prs, list) or not prs:
         return None
+    if branch:
+        prs = [pr for pr in prs
+               if ((pr.get("base") or {}).get("ref") or "").lower() == branch.lower()]
+        if not prs:
+            return None
     return min(prs, key=lambda pr: _pr_rank_for_commit(pr, sha))
 
 
@@ -501,6 +512,39 @@ def _commit_sha_from_event(event):
     return None
 
 
+# Branch names a pipeline can be built from; the pipeline name ends with one
+# (e.g. "pipeline-cmc-ims-api-schedules-master", "pipeline-jobs-am-uat-Pipeline").
+_BRANCH_TOKENS = ("master", "main", "uat", "staging", "stage", "prod",
+                  "production", "develop", "dev", "release")
+
+
+def _pipeline_name(event):
+    """The CodePipeline name from a build message, or None."""
+    for att in event.get("attachments", []) or []:
+        for f in att.get("fields", []) or []:
+            title = (f.get("title") or "").strip()
+            if title.lower().startswith("pipeline"):
+                return title
+    m = re.search(r"pipeline[-\w]+", json.dumps(event), re.IGNORECASE)
+    return m.group(0) if m else None
+
+
+def _pipeline_branch(event):
+    """The branch this pipeline builds, or None when it can't be told.
+
+    Only a recognised branch token counts — an unknown suffix returns None so
+    the caller falls back to matching on the commit alone rather than filtering
+    every PR out.
+    """
+    name = _pipeline_name(event)
+    if not name:
+        return None
+    parts = [p for p in re.split(r"[-_]", name.lower()) if p]
+    if parts and parts[-1] == "pipeline":
+        parts.pop()
+    return parts[-1] if parts and parts[-1] in _BRANCH_TOKENS else None
+
+
 def _build_pr_candidates(event):
     """(owner, repo, sha) tuples to try for this build message. Prefers a direct
     github.com commit URL; otherwise uses the 'Commit Id' short SHA and fuzzily
@@ -554,9 +598,10 @@ def handle_build_notification(event, say, logger=None):
     statuses = _build_statuses(event)
     if not statuses:
         return  # nothing terminal to report yet (still building)
+    branch = _pipeline_branch(event)  # only tag PRs targeting the branch deployed
     try:
         for owner, repo, sha in _build_pr_candidates(event):
-            pr = find_pr_for_commit(owner, repo, sha)
+            pr = find_pr_for_commit(owner, repo, sha, branch)
             if not pr:
                 continue
             body = fetch_pr_body(owner, repo, pr)
