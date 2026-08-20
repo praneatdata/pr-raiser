@@ -1,5 +1,8 @@
 {
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index/$1" }
+  ],
+  "crons": [
+    { "path": "/cron/leaderboard", "schedule": "0 4 1 * *" }
   ]
 }

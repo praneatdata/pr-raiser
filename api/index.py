@@ -56,6 +56,26 @@ def _debug_payload(observed_path):
     }
 
 
+def _run_leaderboard_cron():
+    """Post last month's leaderboard (Vercel Cron hits this on the 1st).
+
+    Guarded two ways: CRON_SECRET must match when it's set, and the post itself
+    is idempotent per month, so an unauthenticated hit or a platform retry can
+    at worst trigger a month that was already announced — which is a no-op.
+    """
+    if _init_error:
+        return {"error": "app failed to initialize; see GET /"}, 500
+    secret = os.environ.get("CRON_SECRET")
+    if secret and request.headers.get("Authorization") != f"Bearer {secret}":
+        return {"error": "unauthorized"}, 401
+    try:
+        import leaderboard
+        return leaderboard.post_monthly(bolt_app.client)
+    except Exception:
+        log.exception("leaderboard cron failed")
+        return {"error": traceback.format_exc().splitlines()[-1]}, 500
+
+
 @app.route("/", defaults={"subpath": ""}, methods=["GET", "POST"])
 @app.route("/<path:subpath>", methods=["GET", "POST"])
 def route(subpath):
@@ -77,6 +97,9 @@ def route(subpath):
                          request.headers.get("X-Slack-Retry-Reason"))
                 return "", 200
         return slack_request_handler.handle(request)
+
+    if tail.endswith("/cron/leaderboard"):
+        return _run_leaderboard_cron()
 
     if tail.endswith("/debug"):
         return _debug_payload(tail)

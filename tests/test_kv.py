@@ -29,6 +29,11 @@ class FakeKV:
     def hgetall(self, key):
         return dict(self.h.get(key, {}))
 
+    def hincrby(self, key, field, amount=1):
+        d = self.h.setdefault(key, {})
+        d[field] = int(d.get(field, 0)) + int(amount)
+        return d[field]
+
     def sadd(self, key, *members):
         st = self.s.setdefault(key, set())
         added = sum(1 for m in members if m not in st)
@@ -46,8 +51,8 @@ class FakeKV:
 
     def patched(self):
         return patch.multiple(bot.kv, kv_available=self.kv_available, hset=self.hset,
-                              hgetall=self.hgetall, sadd=self.sadd, srem=self.srem,
-                              smembers=self.smembers)
+                              hgetall=self.hgetall, hincrby=self.hincrby, sadd=self.sadd,
+                              srem=self.srem, smembers=self.smembers)
 
 
 class FakeResp:

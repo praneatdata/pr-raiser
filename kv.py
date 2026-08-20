@@ -56,6 +56,12 @@ def hgetall(key):
     return {res[i]: res[i + 1] for i in range(0, len(res) - 1, 2)}
 
 
+def hincrby(key, field, amount=1):
+    """Add to a hash field (creating it at 0 first). Atomic, so concurrent PR
+    opens can't lose a count the way read-modify-write would."""
+    return _command(["HINCRBY", key, field, amount])
+
+
 def sadd(key, *members):
     """Add members to a set; returns how many were NEW. That count is what makes
     an atomic claim possible — exactly one racing caller sees 1 for a member."""

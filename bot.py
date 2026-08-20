@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import logging
+from datetime import datetime, timedelta, timezone
 
 import requests
 from slack_bolt import App
@@ -222,6 +223,30 @@ def kv_get_notified(owner, repo, number):
 def kv_add_notified(owner, repo, number, slugs):
     if slugs:
         kv.sadd(_kv_notif_key(owner, repo, number), *slugs)
+
+
+# Leaderboard tallies. The team is in India, so months are bucketed in IST — a
+# PR raised late on the 31st belongs to that month, not the next one. A fixed
+# offset avoids depending on tzdata being present in the serverless image.
+IST = timezone(timedelta(hours=5, minutes=30))
+LB_TOTAL_KEY = "prlb:total"
+
+
+def lb_month_key(when=None):
+    """KV key holding the per-user PR tally for `when`'s month (IST)."""
+    return f"prlb:{(when or datetime.now(IST)).astimezone(IST):%Y-%m}"
+
+
+def record_pr_raised(uid, when=None):
+    """Count one successfully opened PR toward the leaderboard. Best-effort: a
+    counter failure must never stop a PR from being reported as opened."""
+    if not uid or not kv.kv_available():
+        return
+    try:
+        kv.hincrby(LB_TOTAL_KEY, uid, 1)
+        kv.hincrby(lb_month_key(when), uid, 1)
+    except (requests.RequestException, RuntimeError) as e:
+        log.warning("leaderboard tally failed for %s: %s", uid, e)
 
 
 def kv_claim_status(owner, repo, number, slug):
@@ -487,8 +512,10 @@ def create_pr(p):
         if wmap and kv.kv_available():
             try:
                 kv_add_watchers(p["owner"], p["repo"], pr["number"], wmap)
-            except requests.RequestException as e:
+            except (requests.RequestException, RuntimeError) as e:
+                # The PR is open; a store problem must not report it as failed.
                 log.warning("KV watcher write failed for PR #%s: %s", pr.get("number"), e)
+        record_pr_raised(p.get("requester"))
         return "created", pr
     if r.status_code == 422:                     # usually "a PR already exists"
         existing = find_open_pr(p)
