@@ -9,12 +9,18 @@ P = {"owner": "acme", "repo": "widgets", "base_branch": "main",
      "head_owner": "acme", "head_branch": "feat", "api_head": "feat"}
 
 
-def _compare(total, messages=None, ok=True):
+def _commit(message, merge=False):
+    """A compare-API commit; a merge commit is one with two parents."""
+    return {"commit": {"message": message},
+            "parents": [{"sha": "a"}, {"sha": "b"}] if merge else [{"sha": "a"}]}
+
+
+def _compare(total, messages=None, ok=True, commits=None):
     r = MagicMock()
     r.ok = ok
     r.json.return_value = {
         "total_commits": total,
-        "commits": [{"commit": {"message": m}} for m in (messages or [])],
+        "commits": commits if commits is not None else [_commit(m) for m in (messages or [])],
     }
     return r
 
@@ -98,3 +104,43 @@ def test_explicit_title_beats_the_commit_subject():
         bot.create_pr(dict(P, title="My Title"))
     assert post.call_args.kwargs["json"]["title"] == "My Title"
     sct.assert_not_called()  # no compare lookup when a title was given
+
+
+# --- merge commits don't count as work -------------------------------------
+
+def test_merge_commit_alongside_one_real_commit_still_borrows_the_title():
+    # a branch that's one change plus a "Merge branch 'master' into ..." is
+    # still a single-commit PR
+    commits = [_commit("fix(analytics): emit date doc-value painless per Elasticsearch version"),
+               _commit("Merge branch 'master' into analytics_api", merge=True)]
+    with patch.object(bot.requests, "get", return_value=_compare(2, commits=commits)):
+        assert single_commit_title(P) == \
+            "fix(analytics): emit date doc-value painless per Elasticsearch version"
+
+
+def test_several_merges_around_one_real_commit():
+    commits = [_commit("Merge branch 'master' into x", merge=True),
+               _commit("Add the thing"),
+               _commit("Merge branch 'master' into x", merge=True)]
+    with patch.object(bot.requests, "get", return_value=_compare(3, commits=commits)):
+        assert single_commit_title(P) == "Add the thing"
+
+
+def test_two_real_commits_keep_the_branch_format():
+    commits = [_commit("First change"), _commit("Second change"),
+               _commit("Merge branch 'master' into x", merge=True)]
+    with patch.object(bot.requests, "get", return_value=_compare(3, commits=commits)):
+        assert single_commit_title(P) is None
+
+
+def test_only_merge_commits_has_no_title():
+    commits = [_commit("Merge branch 'master' into x", merge=True)]
+    with patch.object(bot.requests, "get", return_value=_compare(1, commits=commits)):
+        assert single_commit_title(P) is None
+
+
+def test_truncated_compare_is_never_a_single_commit_pr():
+    # GitHub caps `commits` at 250; a longer branch can't be judged from it
+    commits = [_commit(f"c{i}", merge=(i > 0)) for i in range(250)]
+    with patch.object(bot.requests, "get", return_value=_compare(372, commits=commits)):
+        assert single_commit_title(P) is None
