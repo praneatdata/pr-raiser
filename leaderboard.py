@@ -40,6 +40,18 @@ BASELINE_TOTALS = {
     "U03RS7FEWD9": 3,
 }
 
+# Same snapshot, split by month. Without this the first monthly post would cover
+# only 20-31 August, since that's when counting began. August's KV counter picks
+# up from the snapshot instant, so adding the two gives the whole month.
+BASELINE_MONTHS = {
+    "prlb:2026-07": {"U02LJ0Z08KZ": 18, "U02LVM9B25T": 9, "U08V0KSE092": 8,
+                     "U03RKM78ZF0": 7, "U03RS7FEWD9": 2, "U02LVM9C7DK": 1,
+                     "U02LS4K29KQ": 1},
+    "prlb:2026-08": {"U03S4UWNY9X": 25, "U08V0KSE092": 23, "U02LJ0Z08KZ": 11,
+                     "U02LVM9B25T": 10, "U02LS4K29KQ": 9, "U03RKM78ZF0": 8,
+                     "U02LVM9C7DK": 3, "U03RS7FEWD9": 1},
+}
+
 
 def previous_month(now=None):
     """(month_key, "August 2026") for the month before `now` — what a run on the
@@ -69,9 +81,17 @@ def all_time_totals():
     return totals
 
 
+def month_counts(month_key):
+    """{uid: count} for a month: counters plus any frozen baseline for it."""
+    counts = dict(BASELINE_MONTHS.get(month_key, {}))
+    for uid, n in _counts(month_key).items():
+        counts[uid] = counts.get(uid, 0) + n
+    return dict(sorted(counts.items(), key=lambda kv_: (-kv_[1], kv_[0])))
+
+
 def build_message(month_key, label):
     """The Slack message for a month, or None when nobody raised anything."""
-    month = _counts(month_key)
+    month = month_counts(month_key)
     totals = all_time_totals()
     if not month:
         return None
