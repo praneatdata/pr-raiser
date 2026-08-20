@@ -199,3 +199,16 @@ def test_a_month_with_only_baseline_still_posts():
     assert r["status"] == "posted"
     text = client.chat_postMessage.call_args.kwargs["text"]
     assert "July 2026" in text and "*46* PRs raised in July" in text
+
+
+def test_dry_run_never_posts_or_consumes_the_month():
+    fake = FakeKV()
+    client = MagicMock()
+    with fake.patched():
+        r = leaderboard.post_monthly(client, now=_at(2026, 8, 1), dry_run=True)
+        assert r["status"] == "dry_run" and r["would_post"] is True
+        assert "July 2026" in r["preview"]
+        client.chat_postMessage.assert_not_called()
+        # the month is untouched, so the real run still works
+        client.chat_postMessage.return_value = {"ts": "1.1", "channel": "C1"}
+        assert leaderboard.post_monthly(client, now=_at(2026, 8, 1))["status"] == "posted"

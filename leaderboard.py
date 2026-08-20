@@ -119,10 +119,18 @@ def build_message(month_key, label):
     return "\n".join(lines)
 
 
-def post_monthly(client, now=None, channel=None, force=False):
+def post_monthly(client, now=None, channel=None, force=False, dry_run=False):
     """Post last month's leaderboard. Idempotent: a month is announced once, so
-    a cron retry (or a stray request) can't repeat it. Returns a status dict."""
+    a cron retry (or a stray request) can't repeat it. Returns a status dict.
+
+    dry_run renders the message and reports what would happen without posting or
+    consuming the month — for checking the endpoint is healthy.
+    """
     month_key, label = previous_month(now)
+    if dry_run:
+        text = build_message(month_key, label)
+        return {"status": "dry_run", "month": month_key,
+                "would_post": bool(text), "preview": text}
     if not force and kv.sadd(POSTED_KEY, month_key) != 1:
         return {"status": "already_posted", "month": month_key}
     text = build_message(month_key, label)

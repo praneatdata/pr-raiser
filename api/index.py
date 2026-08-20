@@ -70,7 +70,9 @@ def _run_leaderboard_cron():
         return {"error": "unauthorized"}, 401
     try:
         import leaderboard
-        return leaderboard.post_monthly(bolt_app.client)
+        # ?dry=1 renders without posting, so the endpoint can be checked safely.
+        dry = request.args.get("dry") in ("1", "true", "yes")
+        return leaderboard.post_monthly(bolt_app.client, dry_run=dry)
     except Exception:
         log.exception("leaderboard cron failed")
         return {"error": traceback.format_exc().splitlines()[-1]}, 500
