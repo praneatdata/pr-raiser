@@ -423,6 +423,37 @@ def _watcher_map(p):
     return wmap
 
 
+def _single_commit_title(p):
+    """The commit's subject line when the compare holds exactly one commit.
+
+    GitHub titles a one-commit PR after that commit rather than the branch names,
+    which reads far better than "someone:branch → uat". Returns None (so the
+    caller keeps the branch format) for any other number of commits, or if the
+    compare can't be read.
+    """
+    try:
+        r = requests.get(
+            f"{GITHUB_API}/repos/{p['owner']}/{p['repo']}"
+            f"/compare/{p['base_branch']}...{p['api_head']}",
+            headers=gh_headers(p), timeout=30,
+        )
+        if not r.ok:
+            return None
+        data = r.json()
+        # total_commits is the real count; the commits array itself caps at 250.
+        if data.get("total_commits") != 1:
+            return None
+        commits = data.get("commits") or []
+        if len(commits) != 1:
+            return None
+        message = ((commits[0].get("commit") or {}).get("message") or "").strip()
+        subject = message.split("\n", 1)[0].strip()
+        return subject[:250] or None
+    except requests.RequestException as e:
+        log.info("compare lookup for PR title failed: %s", e)
+        return None
+
+
 def create_pr(p):
     body = p.get("body") or "Opened automatically from a compare link shared in Slack."
     wmap = _watcher_map(p)
@@ -432,8 +463,12 @@ def create_pr(p):
     if wmap and not kv.kv_available():
         body += "\n\n" + "\n".join(
             _requester_marker(uid, note or None) for uid, note in wmap.items())
+    # An explicit title wins; otherwise borrow a lone commit's subject the way
+    # GitHub does, and fall back to the branch names only for multi-commit PRs.
+    title = (p.get("title") or _single_commit_title(p)
+             or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}")
     payload = {
-        "title": p.get("title") or f"{p['head_owner']}:{p['head_branch']} → {p['base_branch']}",
+        "title": title,
         "head": p["api_head"],
         "base": p["base_branch"],
         "body": body,

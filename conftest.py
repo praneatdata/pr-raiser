@@ -26,6 +26,10 @@ def _no_org_discovery(monkeypatch):
     import bot
 
     monkeypatch.setattr(bot, "_list_org_repos_with", lambda owner, token_env: [])
+    # create_pr asks GitHub for the compare when no title was given, to borrow a
+    # lone commit's subject. Default it to "no single commit" so existing tests
+    # stay offline; the title tests import the real function directly.
+    monkeypatch.setattr(bot, "_single_commit_title", lambda p: None)
     for name in [n for n in os.environ if n.startswith("GITHUB_TOKEN_")]:
         monkeypatch.delenv(name, raising=False)
     bot._ORG_DISCOVERY.clear()
