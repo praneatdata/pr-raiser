@@ -631,3 +631,17 @@ def test_handle_message_wrapped_url_with_title(monkeypatch):
     p = cp.call_args.args[0]
     # the URL's internal pipe was NOT treated as a delimiter
     assert p["owner"] == "acme" and p.get("title") == "Real Title"
+
+
+def test_404_says_access_not_just_not_found():
+    resp = FakeResp(404, {"message": "Not Found"})
+    resp.url = "https://api.github.com/repos/vmockinc/shibboleth-sp/pulls"
+    text = bot._pr_result_text("error", resp)
+    assert "vmockinc/shibboleth-sp" in text and "access" in text
+    assert "404" not in text  # the bare code told nobody anything useful
+
+
+def test_other_errors_keep_their_detail():
+    text = bot._pr_result_text("error", FakeResp(422, {"message": "Validation Failed",
+                                                      "errors": [{"message": "fork_collab"}]}))
+    assert "422" in text and "fork_collab" in text

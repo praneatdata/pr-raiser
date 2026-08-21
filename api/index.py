@@ -45,7 +45,7 @@ def _debug_payload(observed_path):
 
     required = {"SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "GITHUB_TOKEN"}
     required.update(TOKEN_ENV_VARS.values())
-    return {
+    payload = {
         "commit": os.environ.get("VERCEL_GIT_COMMIT_SHA", "unknown")[:7],
         "python": sys.version.split()[0],
         "observed_path": observed_path,  # what Vercel actually handed Flask
@@ -54,6 +54,32 @@ def _debug_payload(observed_path):
         "init_ok": _init_error is None,
         "init_error": _init_error,
     }
+    if request.args.get("tokens"):
+        # Opt-in: one API call per token, so /debug stays fast by default. A
+        # revoked token is otherwise invisible here — env presence says nothing
+        # about validity, and it shows up only as 404s on that token's repos.
+        payload["tokens"] = _token_health(required)
+    return payload
+
+
+def _token_health(names):
+    """{env_var: "ok as <login>" | "INVALID" | "unset"} for each GitHub token."""
+    import requests
+
+    out = {}
+    for name in sorted(n for n in names if n.startswith("GITHUB_TOKEN")):
+        token = os.environ.get(name)
+        if not token:
+            out[name] = "unset"
+            continue
+        try:
+            r = requests.get("https://api.github.com/user", timeout=10,
+                             headers={"Authorization": f"token {token}"})
+            out[name] = f"ok as {r.json().get('login')}" if r.ok else \
+                f"INVALID (HTTP {r.status_code})"
+        except Exception as e:
+            out[name] = f"check failed: {e}"
+    return out
 
 
 def _run_leaderboard_cron():

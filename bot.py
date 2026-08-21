@@ -536,6 +536,14 @@ def _pr_result_text(status, result):
         return f":rocket: Opened <{result['html_url']}|PR #{result['number']}> — {result['title']}"
     if status == "exists":
         return f":information_source: A PR is already open: <{result['html_url']}|PR #{result['number']}>"
+    if getattr(result, "status_code", None) == 404:
+        # GitHub returns a bare 404 for a private repo the token can't see, which
+        # is indistinguishable from a typo unless we say so.
+        m = re.search(r"/repos/([^/]+/[^/]+)/pulls", getattr(result, "url", "") or "")
+        repo = f" `{m.group(1)}`" if m else ""
+        return (f":x: I can't see{repo} — either it doesn't exist or none of my "
+                "GitHub tokens has access to it. If the repo is real, my access "
+                "needs updating (a token may have expired).")
     try:
         body = result.json()
         detail = body.get("message", "")
