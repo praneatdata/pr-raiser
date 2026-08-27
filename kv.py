@@ -50,6 +50,11 @@ def hset(key, field, value, nx=False):
     return _command(["HSETNX" if nx else "HSET", key, field, value])
 
 
+def hget(key, field):
+    """One hash field's value, or None when absent."""
+    return _command(["HGET", key, field])
+
+
 def hgetall(key):
     """Return the hash as a dict (Upstash returns a flat [f1, v1, f2, v2, ...])."""
     res = _command(["HGETALL", key]) or []

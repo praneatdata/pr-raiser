@@ -199,15 +199,20 @@ def _kv_notif_key(owner, repo, number):
 def kv_add_watchers(owner, repo, number, watchers):
     """Record {uid: note} watchers for a PR. A note overwrites (upgrades) an
     existing entry; a plain add uses HSETNX so it never downgrades an existing
-    note. Returns the uids actually written (new, or upgraded from no-note)."""
+    note. Returns the uids actually written (new, or upgraded from no-note).
+
+    Deliberately avoids an upfront HGETALL: HSETNX already reports whether the
+    field was absent, which is all the no-note case needs, so the common /track
+    costs one round trip instead of two. That matters because the whole listener
+    runs before the HTTP ack on serverless, inside Slack's 3s command deadline."""
     key = _kv_watch_key(owner, repo, number)
-    existing = kv.hgetall(key)
     written = []
     for uid, note in watchers.items():
-        if uid in existing and (not note or existing[uid]):
-            continue  # already present, and we'd not be adding a new note
-        kv.hset(key, uid, note or "", nx=not note)
-        written.append(uid)
+        if kv.hset(key, uid, note or "", nx=True):
+            written.append(uid)          # 1 = field was absent, so this is new
+        elif note and not kv.hget(key, uid):
+            kv.hset(key, uid, note)      # present but note-less: upgrade it
+            written.append(uid)
     return written
 
 
@@ -1055,19 +1060,26 @@ def handle_track_command(ack, command, respond, context=None, logger=None):
     # The message is for the teammates being looped in; with none, it's a self-note.
     noted = set(mentioned or ([caller] if caller else []))
     p = {"owner": owner, "repo": repo}
+    # Each watcher's note ("" = none); the message is only for the `noted` set.
+    wmap = {w: (note if w in noted else "") for w in watchers}
+    pr_url = f"https://github.com/{owner}/{repo}/pull/{number}"
     try:
-        r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
-                         headers=gh_headers(p), timeout=30)
-        if not r.ok:
-            respond(f":x: Couldn't find PR #{number} in {owner}/{repo} (HTTP {r.status_code}).")
-            return
-        pr = r.json()
-        # Each watcher's note ("" = none); the message is only for the `noted` set.
-        wmap = {w: (note if w in noted else "") for w in watchers}
         if kv.kv_available():
+            # No GitHub call at all: the watcher write needs nothing from the PR,
+            # and every round trip here counts against Slack's 3s deadline. The
+            # cost is that a mistyped number is accepted — the entry is inert
+            # (no build ever references it) and the link 404s when clicked.
             new = kv_add_watchers(owner, repo, number, wmap)  # no write to the target repo
         else:
-            # Legacy fallback: stamp hidden markers into the PR body (needs push access).
+            # Legacy fallback: stamp hidden markers into the PR body (needs push
+            # access), which does need the current body, so fetch the PR first.
+            r = requests.get(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+                             headers=gh_headers(p), timeout=30)
+            if not r.ok:
+                respond(f":x: Couldn't find PR #{number} in {owner}/{repo} (HTTP {r.status_code}).")
+                return
+            pr = r.json()
+            pr_url = pr.get("html_url") or pr_url
             body = pr.get("body") or ""
             to_add = []
             for w in watchers:
@@ -1086,11 +1098,11 @@ def handle_track_command(ack, command, respond, context=None, logger=None):
                             f"track PR #{number} there (HTTP {pr_r.status_code}).")
                     return
         if not new:
-            respond(f":information_source: Already tracking <{pr['html_url']}|#{number}>.")
+            respond(f":information_source: Already tracking <{pr_url}|#{number}>.")
             return
         who = " ".join(f"<@{w}>" for w in new)
         extra = " with your message" if note else ""
-        respond(f":eyes: Tracking <{pr['html_url']}|#{number}> for {who}{extra} — "
+        respond(f":eyes: Tracking <{pr_url}|#{number}> for {who}{extra} — "
                 "I'll tag them in #code-builds as it builds and deploys.")
     except requests.RequestException as e:
         respond(f":x: Request failed: {e}")

@@ -26,6 +26,9 @@ class FakeKV:
         d[field] = value
         return 1
 
+    def hget(self, key, field):
+        return self.h.get(key, {}).get(field)
+
     def hgetall(self, key):
         return dict(self.h.get(key, {}))
 
@@ -51,8 +54,8 @@ class FakeKV:
 
     def patched(self):
         return patch.multiple(bot.kv, kv_available=self.kv_available, hset=self.hset,
-                              hgetall=self.hgetall, hincrby=self.hincrby, sadd=self.sadd,
-                              srem=self.srem, smembers=self.smembers)
+                              hget=self.hget, hgetall=self.hgetall, hincrby=self.hincrby,
+                              sadd=self.sadd, srem=self.srem, smembers=self.smembers)
 
 
 class FakeResp:
@@ -92,6 +95,14 @@ def test_kv_hgetall_pairs_flat_array(monkeypatch):
         assert kv.hgetall("k") == {"U1": "", "U2": "note"}
 
 
+def test_kv_hget_command_shape(monkeypatch):
+    monkeypatch.setenv("KV_REST_API_URL", "https://x"); monkeypatch.setenv("KV_REST_API_TOKEN", "t")
+    resp = MagicMock(); resp.json.return_value = {"result": "note"}
+    with patch.object(kv.requests, "post", return_value=resp) as post:
+        assert kv.hget("k", "U1") == "note"
+    assert post.call_args.kwargs["json"] == ["HGET", "k", "U1"]
+
+
 # --- kv_add_watchers upgrade/no-downgrade ---------------------------------
 
 def test_kv_add_watchers_upgrades_note_but_never_downgrades():
@@ -105,6 +116,24 @@ def test_kv_add_watchers_upgrades_note_but_never_downgrades():
         assert written == ["U1"]  # only U1 changed
 
 
+def test_kv_add_watchers_plain_add_is_one_round_trip():
+    # /track must answer inside Slack's 3s deadline, so the common case (a plain
+    # self-add) may not pay for an HGETALL/HGET on top of the write.
+    fake = FakeKV()
+    with fake.patched(), patch.object(bot.kv, "hgetall", side_effect=AssertionError("HGETALL")), \
+         patch.object(bot.kv, "hget", side_effect=AssertionError("HGET")):
+        assert bot.kv_add_watchers("o", "r", 1, {"U1": ""}) == ["U1"]
+        assert bot.kv_add_watchers("o", "r", 1, {"U1": ""}) == []   # re-add: still one HSETNX
+
+
+def test_kv_add_watchers_note_on_fresh_field_is_one_round_trip():
+    fake = FakeKV()
+    with fake.patched(), patch.object(bot.kv, "hgetall", side_effect=AssertionError("HGETALL")), \
+         patch.object(bot.kv, "hget", side_effect=AssertionError("HGET")):
+        assert bot.kv_add_watchers("o", "r", 1, {"U1": "note"}) == ["U1"]
+    assert fake.hgetall(bot._kv_watch_key("o", "r", 1)) == {"U1": "note"}
+
+
 # --- /track uses KV, no repo write ----------------------------------------
 
 def _track(text, user="UREQ", ctx=None):
@@ -113,26 +142,36 @@ def _track(text, user="UREQ", ctx=None):
     return respond
 
 
-def test_track_writes_to_kv_without_patching_pr():
+def test_track_writes_to_kv_without_calling_github():
     fake = FakeKV()
-    pr = {"number": 42, "html_url": "https://gh/pr/42", "body": ""}
     with fake.patched(), \
-         patch.object(bot.requests, "get", return_value=FakeResp(json_data=pr)), \
+         patch.object(bot.requests, "get") as gh_get, \
          patch.object(bot.requests, "patch") as gh_patch:
         respond = _track("vmockinc/dashboard-ui#42 <@UALICE> | verify SSO",
                          ctx={"bot_user_id": "UBOT"})
     gh_patch.assert_not_called()  # KV path never touches the target repo
+    gh_get.assert_not_called()    # ...nor reads it: nothing here needs the PR
     assert fake.hgetall(bot._kv_watch_key("vmockinc", "dashboard-ui", "42")) == \
         {"UREQ": "", "UALICE": "verify SSO"}
     assert "Tracking" in respond.call_args.args[0]
 
 
+def test_track_kv_links_the_pr_it_constructed():
+    # Without the GitHub read there's no html_url to quote, so the reply has to
+    # build the canonical one from owner/repo/number.
+    fake = FakeKV()
+    with fake.patched(), patch.object(bot.requests, "get") as gh_get:
+        respond = _track("vmockinc/dashboard-ui#42")
+    gh_get.assert_not_called()
+    assert "<https://github.com/vmockinc/dashboard-ui/pull/42|#42>" in respond.call_args.args[0]
+
+
 def test_track_kv_already_tracking_is_noop():
     fake = FakeKV()
     fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", "42")] = {"UREQ": ""}
-    pr = {"number": 42, "html_url": "u", "body": ""}
-    with fake.patched(), patch.object(bot.requests, "get", return_value=FakeResp(json_data=pr)):
+    with fake.patched(), patch.object(bot.requests, "get") as gh_get:
         respond = _track("vmockinc/dashboard-ui#42")
+    gh_get.assert_not_called()
     assert "already tracking" in respond.call_args.args[0].lower()
 
 
