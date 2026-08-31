@@ -98,7 +98,8 @@ def _run_leaderboard_cron():
         import leaderboard
         # ?dry=1 renders without posting, so the endpoint can be checked safely.
         dry = request.args.get("dry") in ("1", "true", "yes")
-        return leaderboard.post_monthly(bolt_app.client, dry_run=dry)
+        return leaderboard.post_monthly(bolt_app.client, dry_run=dry,
+                                        month=request.args.get("month"))
     except Exception:
         log.exception("leaderboard cron failed")
         return {"error": traceback.format_exc().splitlines()[-1]}, 500

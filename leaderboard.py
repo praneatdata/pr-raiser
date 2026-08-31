@@ -119,14 +119,20 @@ def build_message(month_key, label):
     return "\n".join(lines)
 
 
-def post_monthly(client, now=None, channel=None, force=False, dry_run=False):
+def post_monthly(client, now=None, channel=None, force=False, dry_run=False, month=None):
     """Post last month's leaderboard. Idempotent: a month is announced once, so
     a cron retry (or a stray request) can't repeat it. Returns a status dict.
 
     dry_run renders the message and reports what would happen without posting or
-    consuming the month — for checking the endpoint is healthy.
+    consuming the month — for checking the endpoint is healthy. `month`
+    ("YYYY-MM") previews a specific month instead of last one, so a run today can
+    show what the 1st will announce; it is only honoured for a dry run.
     """
-    month_key, label = previous_month(now)
+    if month and dry_run:
+        month_key = f"prlb:{month}"
+        label = f"{datetime.strptime(month, '%Y-%m'):%B %Y}"
+    else:
+        month_key, label = previous_month(now)
     if dry_run:
         text = build_message(month_key, label)
         return {"status": "dry_run", "month": month_key,

@@ -212,3 +212,23 @@ def test_dry_run_never_posts_or_consumes_the_month():
         # the month is untouched, so the real run still works
         client.chat_postMessage.return_value = {"ts": "1.1", "channel": "C1"}
         assert leaderboard.post_monthly(client, now=_at(2026, 8, 1))["status"] == "posted"
+
+
+def test_dry_run_can_preview_a_specific_month():
+    fake = FakeKV()
+    client = MagicMock()
+    with fake.patched():   # run "in August", preview what 1 September will say
+        r = leaderboard.post_monthly(client, now=_at(2026, 8, 21),
+                                     dry_run=True, month="2026-08")
+    assert r["month"] == "prlb:2026-08" and "August 2026" in r["preview"]
+    client.chat_postMessage.assert_not_called()
+
+
+def test_month_override_is_ignored_for_a_real_post():
+    # the override must never let a stray request announce the wrong month
+    fake = FakeKV()
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1.1", "channel": "C1"}
+    with fake.patched():
+        r = leaderboard.post_monthly(client, now=_at(2026, 8, 1), month="2026-08")
+    assert r["month"] == "prlb:2026-07"  # still last month, not the override

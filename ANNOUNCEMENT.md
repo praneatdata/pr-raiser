@@ -1,25 +1,18 @@
-<!-- Paste-ready Slack message (mrkdwn). Send AFTER the `improvements` branch
-     is deployed — both features below only work once it's live.
-     Copy everything below this comment. -->
+<!-- Paste-ready Slack message (mrkdwn), round 2 — only the features added since
+     the previous announcement. Copy everything below this comment. -->
 
-:sparkles: *What's new in PR Raiser*
+:sparkles: *What's new in PR Raiser (round 2)*
 
-Two new ways to open PRs faster:
+Two more things to make life easier:
 
-*1.* :new: *`/pr` — no compare link needed*
-Give me the repo, base, and head, and I'll open the PR and post the link right here:
-`/pr vmockinc/resume-ui main my-feature`
-Opening from a fork? Put the fork owner in the head:
-`/pr vmockinc/resume-ui uat yourname:your-branch`
+*1.* :new: *A `/pr` form — nothing to memorize*
+Type `/pr` by itself and a form pops open: pick the repo (already filled in with `vmockinc/`), base, head, an optional title and body, and choose your approvers from a people picker — no member IDs, no `@` typing. Hit *Open PR* and you're done.
 
-*2.* :new: *Loop in an approver automatically*
-@mention a teammate along with your compare link (or with `/pr`) and I'll DM them the PR asking for their review. For example:
-github.com/vmockinc/resume-ui/compare/main...my-feature @teammate
+*2.* :new: *Deploy updates right in #code-builds*
+After a PR you opened through me merges, I'll tag you in #code-builds as it ships — :white_check_mark: Deployed on UAT, then Staging, then Live — or :x: Build failed if the pipeline breaks. No more babysitting the channel.
 
-*3.* :new: *Set a custom title & body*
-Add them after a `|` (works with both a link and `/pr`; body is optional):
-`/pr vmockinc/resume-ui main my-feature | Fix login redirect | Closes the loop bug on SSO`
+_And a small one: when you ask someone to approve, the DM now tells them who requested it._
 
-:warning: _These features are brand new, so there may still be a few bugs. If `/pr` or an approver DM ever acts up, you can always fall back to just pasting the compare link and I'll open the PR the usual way._
+_Everything from the earlier announcements still works — paste a compare link, `/pr owner/repo base head`, add `@teammate` to request approval, and `| Title | Body` for a custom title/body._
 
 Happy shipping! :tada:
