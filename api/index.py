@@ -54,6 +54,17 @@ def _debug_payload(observed_path):
         "init_ok": _init_error is None,
         "init_error": _init_error,
     }
+    if request.args.get("leaderboard"):
+        # Read-only: tells "the cron hasn't run yet" apart from "it ran and the
+        # post failed", which otherwise look identical from outside.
+        import leaderboard as lb
+        month_key, label = lb.previous_month()
+        payload["leaderboard"] = {
+            "due_month": month_key,
+            "label": label,
+            "already_announced": month_key in set(kv.smembers(lb.POSTED_KEY) or []),
+            "announced_months": sorted(kv.smembers(lb.POSTED_KEY) or []),
+        }
     if request.args.get("tokens"):
         # Opt-in: one API call per token, so /debug stays fast by default. A
         # revoked token is otherwise invisible here — env presence says nothing
