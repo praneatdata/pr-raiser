@@ -11,12 +11,12 @@ Keys (see bot.lb_month_key / bot.LB_TOTAL_KEY):
   prlb:total    hash  slack_uid -> PRs opened all time
   prlb:posted   set   month keys already announced (so a retry can't double-post)
 
-The cron runs *daily*, not monthly: Vercel silently skipped the monthly
-invocation on 1 September 2026 (registered, enabled, no request logged), and a
-schedule that fires once a month gets one attempt a month. A daily run reports
-last month only until it has been announced, then no-ops for the rest of the
-month — so the post still happens exactly once, and a skipped day self-heals
-the next morning instead of waiting until the following month.
+The cron fires once, on the 1st (0 4 1 * *). Note that gives Vercel exactly one
+attempt per month: it silently skipped the invocation on 1 September 2026
+(registered and enabled, no request logged), and a skipped month is not
+recovered on its own — the next run reports *its* previous month. If a month is
+missed, announce it with the Run button on the project's Cron Jobs page, or a
+GET to /cron/leaderboard; the per-month claim keeps it to a single post.
 """
 import os
 from datetime import datetime
