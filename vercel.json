@@ -1,8 +1,14 @@
 {
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index/$1" }
+    {
+      "source": "/(.*)",
+      "destination": "/api/index/$1"
+    }
   ],
   "crons": [
-    { "path": "/cron/leaderboard", "schedule": "0 4 1 * *" }
+    {
+      "path": "/cron/leaderboard",
+      "schedule": "0 4 * * *"
+    }
   ]
 }

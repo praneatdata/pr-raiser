@@ -232,3 +232,19 @@ def test_month_override_is_ignored_for_a_real_post():
     with fake.patched():
         r = leaderboard.post_monthly(client, now=_at(2026, 8, 1), month="2026-08")
     assert r["month"] == "prlb:2026-07"  # still last month, not the override
+
+
+def test_daily_runs_report_last_month_only_once():
+    # The cron fires daily; the month must still be announced exactly once, and
+    # a missed day must be picked up by the next run rather than lost.
+    fake = FakeKV()
+    client = MagicMock()
+    client.chat_postMessage.return_value = {"ts": "1.1", "channel": "C1"}
+    with fake.patched():
+        fake.h["prlb:2026-08"] = {"U1": 5}
+        first = leaderboard.post_monthly(client, now=_at(2026, 9, 2))   # a day late
+        rest = [leaderboard.post_monthly(client, now=_at(2026, 9, d))
+                for d in (3, 4, 17, 30)]
+    assert first["status"] == "posted"                       # catches up
+    assert all(r["status"] == "already_posted" for r in rest)  # then quiet
+    client.chat_postMessage.assert_called_once()
