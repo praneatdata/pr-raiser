@@ -248,3 +248,36 @@ def test_daily_runs_report_last_month_only_once():
     assert first["status"] == "posted"                       # catches up
     assert all(r["status"] == "already_posted" for r in rest)  # then quiet
     client.chat_postMessage.assert_called_once()
+
+
+# --- invocation tracking ---------------------------------------------------
+
+def test_records_vercel_cron_and_manual_calls_separately():
+    fake = FakeKV()
+    with fake.patched():
+        leaderboard.record_invocation("vercel-cron/1.0", now=_at(2026, 10, 1))
+        leaderboard.record_invocation("curl/8.7.1", now=_at(2026, 10, 1, h=11))
+        log = leaderboard.invocation_log()
+    assert log["cron_count"] == 1 and log["other_count"] == 1
+    assert log["last_cron_ua"] == "vercel-cron/1.0"
+    assert log["last_cron_at"].startswith("2026-10-01")
+    assert log["last_other_ua"] == "curl/8.7.1"
+
+
+def test_a_rejected_call_is_still_recorded():
+    # otherwise a scheduler call that failed auth looks like it never happened
+    fake = FakeKV()
+    with fake.patched():
+        leaderboard.record_invocation("vercel-cron/1.0", authorized=False,
+                                      now=_at(2026, 10, 1))
+        log = leaderboard.invocation_log()
+    assert log["last_denied_at"].startswith("2026-10-01")
+    assert log["last_cron_at"].startswith("2026-10-01")
+
+
+def test_recording_never_raises_when_the_store_is_down():
+    with patch.object(bot.kv, "kv_available", lambda: True), \
+         patch.object(bot.kv, "hset_many", side_effect=RuntimeError("kv down")):
+        leaderboard.record_invocation("vercel-cron/1.0")   # must not raise
+    with patch.object(bot.kv, "hgetall", side_effect=RuntimeError("kv down")):
+        assert leaderboard.invocation_log() == {}

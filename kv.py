@@ -61,6 +61,14 @@ def hgetall(key):
     return {res[i]: res[i + 1] for i in range(0, len(res) - 1, 2)}
 
 
+def hset_many(key, mapping):
+    """Set several hash fields in one round trip."""
+    args = []
+    for k, v in mapping.items():
+        args += [k, v]
+    return _command(["HSET", key, *args]) if args else 0
+
+
 def hincrby(key, field, amount=1):
     """Add to a hash field (creating it at 0 first). Atomic, so concurrent PR
     opens can't lose a count the way read-modify-write would."""

@@ -64,6 +64,7 @@ def _debug_payload(observed_path):
             "label": label,
             "already_announced": month_key in set(kv.smembers(lb.POSTED_KEY) or []),
             "announced_months": sorted(kv.smembers(lb.POSTED_KEY) or []),
+            "invocations": lb.invocation_log(),
         }
     if request.args.get("tokens"):
         # Opt-in: one API call per token, so /debug stays fast by default. A
@@ -102,11 +103,15 @@ def _run_leaderboard_cron():
     """
     if _init_error:
         return {"error": "app failed to initialize; see GET /"}, 500
+    import leaderboard
     secret = os.environ.get("CRON_SECRET")
-    if secret and request.headers.get("Authorization") != f"Bearer {secret}":
+    authorized = not secret or request.headers.get("Authorization") == f"Bearer {secret}"
+    # Recorded before the auth check, so a scheduler call that was rejected is
+    # still visible rather than looking like it never happened.
+    leaderboard.record_invocation(request.headers.get("User-Agent"), authorized)
+    if not authorized:
         return {"error": "unauthorized"}, 401
     try:
-        import leaderboard
         # ?dry=1 renders without posting, so the endpoint can be checked safely.
         dry = request.args.get("dry") in ("1", "true", "yes")
         return leaderboard.post_monthly(bolt_app.client, dry_run=dry,

@@ -29,6 +29,11 @@ CHANNEL = os.environ.get("LEADERBOARD_CHANNEL", "C0BHZSMFZB4")
 # whose tally is inflated by testing.
 MAINTAINER = os.environ.get("LEADERBOARD_MAINTAINER", "U08V0KSE092")
 POSTED_KEY = "prlb:posted"
+# Who last called the cron endpoint. Vercel skipped the 1 September invocation
+# and the only evidence was its log UI, which is awkward to query after the
+# fact and can't tell a real invocation from a manual curl. Recording each hit
+# means one request answers "did Vercel actually call it?".
+CALLS_KEY = "prlb:calls"
 MEDALS = (":first_place_medal:", ":second_place_medal:", ":third_place_medal:")
 
 # PRs raised before the KV counters existed, so the all-time figure doesn't
@@ -58,6 +63,31 @@ BASELINE_MONTHS = {
                      "U02LVM9B25T": 10, "U02LS4K29KQ": 9, "U03RKM78ZF0": 8,
                      "U02LVM9C7DK": 3, "U03RS7FEWD9": 1},
 }
+
+
+def record_invocation(user_agent, authorized=True, now=None):
+    """Note that the cron endpoint was called. Vercel's scheduler identifies
+    itself as "vercel-cron/…", so its invocations are counted apart from manual
+    ones. Never raises — diagnostics must not break the run they measure."""
+    ua = (user_agent or "unknown")[:120]
+    kind = "cron" if "vercel-cron" in ua.lower() else "other"
+    stamp = (now or datetime.now(bot.IST)).isoformat(timespec="seconds")
+    fields = {f"last_{kind}_at": stamp, f"last_{kind}_ua": ua}
+    if not authorized:
+        fields["last_denied_at"] = stamp
+    try:
+        kv.hset_many(CALLS_KEY, fields)
+        kv.hincrby(CALLS_KEY, f"{kind}_count", 1)
+    except Exception:
+        pass
+
+
+def invocation_log():
+    """What has called the cron endpoint, for /debug. Empty if unavailable."""
+    try:
+        return kv.hgetall(CALLS_KEY) or {}
+    except Exception:
+        return {}
 
 
 def previous_month(now=None):

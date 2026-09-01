@@ -32,6 +32,10 @@ class FakeKV:
     def hgetall(self, key):
         return dict(self.h.get(key, {}))
 
+    def hset_many(self, key, mapping):
+        self.h.setdefault(key, {}).update(mapping)
+        return len(mapping)
+
     def hincrby(self, key, field, amount=1):
         d = self.h.setdefault(key, {})
         d[field] = int(d.get(field, 0)) + int(amount)
@@ -54,7 +58,8 @@ class FakeKV:
 
     def patched(self):
         return patch.multiple(bot.kv, kv_available=self.kv_available, hset=self.hset,
-                              hget=self.hget, hgetall=self.hgetall, hincrby=self.hincrby,
+                              hget=self.hget, hgetall=self.hgetall,
+                              hset_many=self.hset_many, hincrby=self.hincrby,
                               sadd=self.sadd, srem=self.srem, smembers=self.smembers)
 
 
