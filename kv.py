@@ -75,6 +75,11 @@ def hincrby(key, field, amount=1):
     return _command(["HINCRBY", key, field, amount])
 
 
+def expire(key, seconds):
+    """Give a key a TTL so it cleans itself up instead of living forever."""
+    return _command(["EXPIRE", key, int(seconds)])
+
+
 def sadd(key, *members):
     """Add members to a set; returns how many were NEW. That count is what makes
     an atomic claim possible — exactly one racing caller sees 1 for a member."""

@@ -225,9 +225,35 @@ def kv_get_notified(owner, repo, number):
     return set(kv.smembers(_kv_notif_key(owner, repo, number)))
 
 
+# How long a PR's per-status dedup record is worth keeping. It only guards
+# against re-reporting the same build message, and a pipeline finishes in hours,
+# so a month is already generous for a PR still in flight.
+NOTIF_TTL_SECONDS = 30 * 24 * 3600
+# Once a PR has reached the last deploy it can reach, the record is dead weight:
+# keep it only long enough to absorb further edits of that same build message
+# (BuildBot edits one message as the pipeline runs) and any Slack retry.
+TERMINAL_TTL_SECONDS = 2 * 24 * 3600
+# A PR goes either to UAT, or to staging and on to prod — so those two are the
+# last states it can reach. Staging is not terminal (prod follows), and a
+# failure is not terminal (a retry may still succeed).
+TERMINAL_SLUGS = frozenset({"deployed-uat", "deployed-prod"})
+
+
+def kv_expire_notified(owner, repo, number, slugs):
+    """Bound how long a PR's dedup record lives, given the statuses just
+    reported. Best-effort: failing to set a TTL only wastes a little space."""
+    ttl = (TERMINAL_TTL_SECONDS if TERMINAL_SLUGS.intersection(slugs)
+           else NOTIF_TTL_SECONDS)
+    try:
+        kv.expire(_kv_notif_key(owner, repo, number), ttl)
+    except (requests.RequestException, RuntimeError) as e:
+        log.info("couldn't set dedup TTL for %s/%s#%s: %s", owner, repo, number, e)
+
+
 def kv_add_notified(owner, repo, number, slugs):
     if slugs:
         kv.sadd(_kv_notif_key(owner, repo, number), *slugs)
+        kv_expire_notified(owner, repo, number, slugs)
 
 
 # Leaderboard tallies. The team is in India, so months are bucketed in IST — a
@@ -722,7 +748,11 @@ def handle_build_notification(event, say, logger=None):
                 if kv_on:  # couldn't tell anyone — let a later message retry
                     kv_release_status(owner, repo, number, fresh_slugs)
                 raise
-            if not kv_on:
+            if kv_on:
+                # The claim is already written; bound how long it survives now
+                # that we know whether this PR can deploy any further.
+                kv_expire_notified(owner, repo, number, fresh_slugs)
+            else:
                 mark_pr_notified(owner, repo, pr, body, fresh_slugs)
             return
     except requests.RequestException as e:

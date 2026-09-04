@@ -14,7 +14,7 @@ import kv
 class FakeKV:
     """In-memory stand-in for the Upstash hash+set primitives."""
     def __init__(self):
-        self.h, self.s = {}, {}
+        self.h, self.s, self.ttl = {}, {}, {}
 
     def kv_available(self):
         return True
@@ -41,6 +41,10 @@ class FakeKV:
         d[field] = int(d.get(field, 0)) + int(amount)
         return d[field]
 
+    def expire(self, key, seconds):
+        self.ttl[key] = int(seconds)
+        return 1
+
     def sadd(self, key, *members):
         st = self.s.setdefault(key, set())
         added = sum(1 for m in members if m not in st)
@@ -60,7 +64,8 @@ class FakeKV:
         return patch.multiple(bot.kv, kv_available=self.kv_available, hset=self.hset,
                               hget=self.hget, hgetall=self.hgetall,
                               hset_many=self.hset_many, hincrby=self.hincrby,
-                              sadd=self.sadd, srem=self.srem, smembers=self.smembers)
+                              sadd=self.sadd, srem=self.srem, smembers=self.smembers,
+                              expire=self.expire)
 
 
 class FakeResp:
@@ -303,3 +308,76 @@ def test_build_notif_kv_and_legacy_body_markers_merge():
         bot.handle_build_notification(_build_event(), say)
     text = say.call_args.kwargs["text"]
     assert "<@UREQ>" in text and "<@UALICE>" in text  # body (legacy) + KV both tagged
+
+
+# --- dedup records don't live forever -------------------------------------
+
+def _notif_event(stages, sha="abc1234", pipeline="pipeline-dashboard-ui-uat-Pipeline"):
+    return {"bot_id": "B1", "ts": "1.5", "channel": "CB", "text": "",
+            "attachments": [{"fields": [
+                {"title": pipeline, "value": "SUCCEEDED"},
+                {"title": "Stages", "value": stages},
+                {"title": "Commit Id", "value": sha}]}]}
+
+
+def _announce(fake, stages, pipeline="pipeline-dashboard-ui-uat-Pipeline"):
+    fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", 55)] = {"UREQ": ""}
+    say = MagicMock()
+    with fake.patched(), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 55, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        bot.handle_build_notification(_notif_event(stages, pipeline=pipeline), say)
+    return say, fake.ttl.get(bot._kv_notif_key("vmockinc", "dashboard-ui", 55))
+
+
+def test_uat_deploy_is_a_last_state_and_expires_soon():
+    # a PR to uat can't deploy any further, so its dedup record is dead weight
+    say, ttl = _announce(FakeKV(), ":white_check_mark: DeployTo-uat-us")
+    say.assert_called_once()
+    assert ttl == bot.TERMINAL_TTL_SECONDS
+
+
+def test_prod_deploy_is_a_last_state_and_expires_soon():
+    say, ttl = _announce(FakeKV(), ":white_check_mark: DeployTo-prod-us",
+                         pipeline="pipeline-dashboard-ui-master")
+    assert ttl == bot.TERMINAL_TTL_SECONDS
+
+
+def test_staging_is_not_a_last_state():
+    # prod still follows, so the record must outlive the staging deploy
+    say, ttl = _announce(FakeKV(), ":white_check_mark: DeployTo-staging-us",
+                         pipeline="pipeline-dashboard-ui-master")
+    assert ttl == bot.NOTIF_TTL_SECONDS
+
+
+def test_a_failure_is_not_a_last_state():
+    # a retry may still succeed, so keep guarding against re-reporting it
+    say, ttl = _announce(FakeKV(), ":x: Build")
+    assert ttl == bot.NOTIF_TTL_SECONDS
+
+
+def test_terminal_record_still_dedupes_a_repeat_of_the_same_message():
+    # the TTL must not be so eager that an edit of the same build message re-tags
+    fake = FakeKV()
+    say, ttl = _announce(fake, ":white_check_mark: DeployTo-uat-us")
+    assert ttl >= 3600           # comfortably outlives edits and Slack retries
+    say2 = MagicMock()
+    with fake.patched(), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 55, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        bot.handle_build_notification(_notif_event(":white_check_mark: DeployTo-uat-us"), say2)
+    say2.assert_not_called()
+
+
+def test_ttl_failure_never_breaks_the_announcement():
+    fake = FakeKV()
+    fake.h[bot._kv_watch_key("vmockinc", "dashboard-ui", 55)] = {"UREQ": ""}
+    say = MagicMock()
+    with fake.patched(), patch.object(bot.kv, "expire", side_effect=RuntimeError("kv down")), \
+         patch.object(bot, "list_org_repos", return_value=["dashboard-ui"]), \
+         patch.object(bot, "find_pr_for_commit", return_value={"number": 55, "html_url": "u"}), \
+         patch.object(bot, "fetch_pr_body", return_value=""):
+        bot.handle_build_notification(_notif_event(":white_check_mark: DeployTo-uat-us"), say)
+    say.assert_called_once()   # the tag still went out
