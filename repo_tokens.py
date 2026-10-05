@@ -52,4 +52,5 @@ TOKEN_ENV_VARS = {
     "vmockinc/jobs-api-communications": "GITHUB_TOKEN_SAGNIK",
     "vmockinc/jobs-api-tracking": "GITHUB_TOKEN_SAGNIK",
     "vmockinc/jobs-api-community-config": "GITHUB_TOKEN_SAGNIK",
+    "vmockinc/jobs-ui": "GITHUB_TOKEN_SUHAIL",
 }
