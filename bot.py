@@ -140,6 +140,22 @@ COMPARE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A Slack entity with a display label: <target|label>. Slack escapes a literal
+# ">" in message text as "&gt;", so neither half can contain a raw angle bracket.
+_SLACK_LABEL_RE = re.compile(r"<([^<>|]*)\|[^<>]*>")
+
+
+def _drop_link_labels(text):
+    """Reduce every <target|label> to <target>, so links are read from the URL.
+
+    A label is only display text. It may be shortened (e.g. copied from
+    "github.com/o/r/compare/…/branch", with the base...head part elided), and
+    matching it as if it were a link reports a parse failure for a link whose
+    real URL opened its PR fine.
+    """
+    return _SLACK_LABEL_RE.sub(r"<\1>", text or "")
+
+
 # Slack renders "@user" in message text as <@U012ABC> or <@U012ABC|display-name>.
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
@@ -785,12 +801,12 @@ def handle_message(event, say, client=None, context=None, logger=None):
     # Treat pipes as title/body delimiters only when a compare link is in the
     # leading part; an incidental "|" in an ordinary message must not break
     # detection or hijack the title/body.
-    if not COMPARE_RE.search(cmd_part):
+    if not COMPARE_RE.search(_drop_link_labels(cmd_part)):
         cmd_part, title, body = raw, None, None
 
     # One message may carry several compare links — open a PR for each. A shared
     # title/body applies to all (typical for the same branch across repos).
-    matches = list(COMPARE_RE.finditer(cmd_part))
+    matches = list(COMPARE_RE.finditer(_drop_link_labels(cmd_part)))
     if not matches:
         return
 
@@ -801,8 +817,7 @@ def handle_message(event, say, client=None, context=None, logger=None):
 
     lines, created, seen = [], [], set()
     for m in matches:
-        # Slack delivers a pasted link as <url|label> and both halves contain the
-        # URL, so the same link matches twice — open one PR per distinct target.
+        # The same link pasted twice in one message opens one PR, not two.
         ident = (m.group("owner").lower(), m.group("repo").lower(), m.group("spec"))
         if ident in seen:
             continue

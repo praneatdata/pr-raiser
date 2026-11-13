@@ -359,6 +359,47 @@ def test_handle_message_one_pr_per_link_despite_slack_url_label():
     assert say.call_args.kwargs["text"].count(":rocket:") == 1
 
 
+def test_handle_message_ignores_a_shortened_link_label():
+    # regression: a link whose label was shortened to "compare/…/branch" opened
+    # its PR from the URL, then also warned "Couldn't parse the compare link"
+    # for the label, which has no base...head to parse.
+    say = _say()
+    url = ("https://github.com/vmockinc/jobs-api-reporting/compare/"
+           "uat...shabbir642:jobs-api-reporting:feature/acs-jobs-reports-uat")
+    label = "github.com/vmockinc/jobs-api-reporting/compare/…/acs-jobs-reports-uat"
+    text = f"jobs-api-reporting\n• `feature/acs-jobs-reports-uat`: <{url}|{label}>"
+    with patch.object(bot, "create_pr",
+                      return_value=("created", {"html_url": "u", "number": 742, "title": "t"})) as cp:
+        bot.handle_message({"text": text, "ts": "1"}, say, None)
+    assert cp.call_count == 1
+    p = cp.call_args.args[0]
+    assert (p["head_owner"], p["head_branch"], p["base_branch"]) == (
+        "shabbir642", "feature/acs-jobs-reports-uat", "uat")
+    msg = say.call_args.kwargs["text"]
+    assert ":rocket:" in msg and "Couldn't parse" not in msg
+
+
+def test_handle_message_still_reads_a_bare_compare_link_after_a_labelled_one():
+    say = _say()
+    text = ("<https://github.com/a/one/compare/main...f|see this> "
+            "github.com/a/two/compare/main...f")
+    seen = []
+
+    def fake(p):
+        seen.append(p["repo"])
+        return ("created", {"html_url": "u", "number": len(seen), "title": "t"})
+
+    with patch.object(bot, "create_pr", side_effect=fake):
+        bot.handle_message({"text": text, "ts": "1"}, say, None)
+    assert seen == ["one", "two"]
+
+
+def test_drop_link_labels():
+    assert bot._drop_link_labels("<https://x/y|label> and <@U1|bob>") == "<https://x/y> and <@U1>"
+    assert bot._drop_link_labels("<https://x/y>") == "<https://x/y>"
+    assert bot._drop_link_labels(None) == ""
+
+
 def test_handle_message_multi_slack_links_dedupe_each():
     say = _say()
     urls = [f"https://github.com/vmockinc/{r}/compare/uat...someone:feat?expand=1"
