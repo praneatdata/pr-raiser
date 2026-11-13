@@ -379,6 +379,34 @@ def test_handle_message_ignores_a_shortened_link_label():
     assert ":rocket:" in msg and "Couldn't parse" not in msg
 
 
+@pytest.mark.parametrize("target", [
+    # pasted as plain text
+    "github.com/vmockinc/jobs-api-reporting/compare/…/acs-jobs-reports-uat",
+    # auto-linked by Slack, which percent-encodes the ellipsis in the URL
+    "<http://github.com/vmockinc/jobs-api-reporting/compare/%E2%80%A6/acs-jobs-reports-uat"
+    "|github.com/vmockinc/jobs-api-reporting/compare/…/acs-jobs-reports-uat>",
+])
+def test_handle_message_says_when_a_pasted_link_was_shortened(target):
+    say = _say()
+    with patch.object(bot, "create_pr") as cp:
+        bot.handle_message({"text": target, "ts": "1"}, say, None)
+    cp.assert_not_called()
+    msg = say.call_args.kwargs["text"]
+    assert "looks shortened" in msg and "vmockinc/jobs-api-reporting" in msg
+    assert "full compare URL" in msg
+
+
+def test_handle_message_unparseable_link_without_ellipsis_keeps_plain_warning():
+    say = _say()
+    with patch.object(bot, "create_pr") as cp:
+        bot.handle_message({"text": "github.com/a/one/compare/just-a-branch", "ts": "1"},
+                           say, None)
+    cp.assert_not_called()
+    msg = say.call_args.kwargs["text"]
+    assert "Couldn't parse the compare link for `a/one`" in msg
+    assert "shortened" not in msg
+
+
 def test_handle_message_still_reads_a_bare_compare_link_after_a_labelled_one():
     say = _say()
     text = ("<https://github.com/a/one/compare/main...f|see this> "

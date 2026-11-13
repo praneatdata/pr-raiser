@@ -775,6 +775,25 @@ def handle_build_notification(event, say, logger=None):
         (logger or log).warning("build-notif failed: %s", e)
 
 
+# An ellipsis where base...head should be, as typed or as Slack percent-encodes
+# it in an auto-linked URL.
+_ELLIPSIS_RE = re.compile(r"…|%E2%80%A6", re.IGNORECASE)
+
+
+def _unparsed_compare_text(owner, repo, spec):
+    """Slack text for a compare link with no base...head to read.
+
+    The usual cause is pasting a link's shortened display text
+    ("compare/…/branch") instead of the link itself, so say that when the spec
+    shows it rather than a bare "couldn't parse".
+    """
+    if _ELLIPSIS_RE.search(spec or ""):
+        return (f":warning: The compare link for `{owner}/{repo}` looks shortened — it "
+                "has `…` where the branches should be. Paste the full compare URL "
+                "from GitHub (`…/compare/base...head`) and I'll open the PR.")
+    return f":warning: Couldn't parse the compare link for `{owner}/{repo}`."
+
+
 def handle_message(event, say, client=None, context=None, logger=None):
     subtype = event.get("subtype")
     if subtype == "message_deleted":
@@ -824,8 +843,8 @@ def handle_message(event, say, client=None, context=None, logger=None):
         seen.add(ident)
         p = parse_compare(m.group("owner"), m.group("repo"), m.group("spec"))
         if not p:
-            lines.append(f":warning: Couldn't parse the compare link for "
-                         f"`{m.group('owner')}/{m.group('repo')}`.")
+            lines.append(_unparsed_compare_text(m.group("owner"), m.group("repo"),
+                                                m.group("spec")))
             continue
         if title:
             p["title"] = title
